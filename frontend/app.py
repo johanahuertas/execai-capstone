@@ -6,7 +6,7 @@ API_BASE = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="ExecAI", layout="centered")
 st.title("ExecAI – Executive Assistant (MVP)")
-st.caption("Type a request → get 3 suggested meeting times → pick one → confirm.")
+st.caption("Type a request → get 3 suggested meeting times → pick one → confirm (mock event).")
 
 user_input = st.text_area(
     "What would you like help with?",
@@ -17,6 +17,8 @@ if "options" not in st.session_state:
     st.session_state.options = []
 if "selected" not in st.session_state:
     st.session_state.selected = None
+if "created_event" not in st.session_state:
+    st.session_state.created_event = None
 
 col1, col2 = st.columns(2)
 
@@ -35,6 +37,7 @@ if col1.button("Suggest times"):
                 data = res.json()
                 st.session_state.options = data.get("options", [])
                 st.session_state.selected = None
+                st.session_state.created_event = None
 
                 if st.session_state.options:
                     st.success("Suggested times loaded ✅")
@@ -46,9 +49,10 @@ if col1.button("Suggest times"):
 if col2.button("Clear"):
     st.session_state.options = []
     st.session_state.selected = None
+    st.session_state.created_event = None
     st.rerun()
 
-# Show options
+# Show options + selection
 if st.session_state.options:
     st.subheader("Suggested times")
 
@@ -73,11 +77,32 @@ if st.session_state.options:
 
     chosen = st.radio("Pick one:", labels)
 
-    if st.button("Confirm meeting"):
-        st.session_state.selected = label_to_option[chosen]
-        st.success("Meeting confirmed (mock) ✅")
+    if st.button("Confirm meeting (mock)"):
+        selected = label_to_option[chosen]
+        st.session_state.selected = selected
+
+        with st.spinner("Creating event..."):
+            try:
+                res = requests.post(
+                    f"{API_BASE}/create-event",
+                    json={
+                        "title": "ExecAI Meeting (MVP)",
+                        "start": selected.get("start"),
+                        "duration_min": selected.get("duration_min", 30),
+                    },
+                    timeout=10,
+                )
+                res.raise_for_status()
+                st.session_state.created_event = res.json()
+                st.success("Event created ✅ (mock)")
+            except Exception as e:
+                st.error(f"Error creating event: {e}")
 
 if st.session_state.selected:
-    st.subheader("Confirmed slot")
+    st.subheader("Selected slot")
     st.json(st.session_state.selected)
+
+if st.session_state.created_event:
+    st.subheader("Created event (mock)")
+    st.json(st.session_state.created_event)
 
