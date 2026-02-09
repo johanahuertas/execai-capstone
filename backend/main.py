@@ -4,6 +4,10 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from openai import RateLimitError  # ✅ for graceful fallback when quota is exceeded
+
+from .intent import parse_intent as parse_intent_ai
+
 app = FastAPI(title="ExecAI Backend")
 
 
@@ -21,7 +25,7 @@ class CreateEventRequest(BaseModel):
 
 
 # -----------------------
-# INTENT HELPERS
+# INTENT HELPERS (fallback)
 # -----------------------
 def _extract_participants(text: str):
     t = text.lower()
@@ -96,22 +100,38 @@ def health_check():
 
 
 @app.post("/parse-intent")
-def parse_intent(payload: ParseIntentRequest):
+def parse_intent_endpoint(payload: ParseIntentRequest):
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
 
-    participants = _extract_participants(text)
-    timeframe = _extract_timeframe(text)
-    meeting_type = _extract_meeting_type(text)
+    # 1) Try AI intent parsing first
+    try:
+        result = parse_intent_ai(text)
+        # Add metadata for demos/debug
+        if isinstance(result, dict):
+            result["mode"] = "ai"
+        return result
 
-    return {
-        "intent": "meeting_scheduling",
-        "participants": participants,
-        "timeframe": timeframe,
-        "meeting_type": meeting_type,
-        "original_text": text,
-    }
+    # 2) If OpenAI quota/billing prevents calls, fallback to rule-based parsing
+    except RateLimitError:
+        participants = _extract_participants(text)
+        timeframe = _extract_timeframe(text)
+        meeting_type = _extract_meeting_type(text)
+
+        return {
+            "intent": "meeting_scheduling",
+            "participants": participants,
+            "timeframe": timeframe,
+            "meeting_type": meeting_type,
+            "original_text": text,
+            "mode": "fallback_rules",
+            "note": "AI unavailable (quota/billing). Returned rule-based intent parsing."
+        }
+
+    # 3) Any other unexpected error -> clean 500
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"parse_intent failed: {str(e)}")
 
 
 @app.post("/suggest-times")
