@@ -7,8 +7,12 @@ from pydantic import BaseModel
 
 from .intent import parse_intent as parse_intent_ai
 from .orchestrator import handle_intent
+from .integrations import router as integrations_router  # ✅ NEW
 
 app = FastAPI(title="ExecAI Backend")
+
+# ✅ NEW: mount integrations endpoints (Google/Microsoft mock)
+app.include_router(integrations_router)
 
 
 # -----------------------
@@ -106,7 +110,7 @@ def suggest_times(payload: ParseIntentRequest):
 def create_event(req: CreateEventRequest):
     """
     Mock event creation.
-    (Real calendar writes require OAuth and are out of scope.)
+    (Real calendar writes require OAuth and is out of scope.)
     """
     return {
         "status": "created",
