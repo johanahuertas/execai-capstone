@@ -1,11 +1,13 @@
 import re
 from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from openai import RateLimitError  # ✅ for graceful fallback when quota is exceeded
+from openai import RateLimitError
 
+# Optional AI parser (may fail due to quota). We keep it to match capstone spec.
 from .intent import parse_intent as parse_intent_ai
 
 app = FastAPI(title="ExecAI Backend")
@@ -25,9 +27,9 @@ class CreateEventRequest(BaseModel):
 
 
 # -----------------------
-# INTENT HELPERS (fallback)
+# FALLBACK NLP (Rules / Heuristics)
 # -----------------------
-def _extract_participants(text: str):
+def _extract_participants(text: str) -> Optional[int]:
     t = text.lower()
 
     if "all four of us" in t or "the four of us" in t:
@@ -57,7 +59,7 @@ def _extract_participants(text: str):
     return None
 
 
-def _extract_timeframe(text: str):
+def _extract_timeframe(text: str) -> Optional[str]:
     t = text.lower()
 
     if "next week" in t:
@@ -84,11 +86,113 @@ def _extract_timeframe(text: str):
 
 def _extract_meeting_type(text: str) -> str:
     t = text.lower()
-    if any(w in t for w in ["call", "phone call", "zoom", "teams"]):
+    if any(w in t for w in ["call", "phone call", "zoom", "teams", "meet"]):
         return "call"
     if any(w in t for w in ["meeting", "meet", "sync", "catch up"]):
         return "meeting"
     return "unknown"
+
+
+def _extract_email_recipient(text: str) -> Optional[str]:
+    """
+    Very lightweight heuristic:
+    - "email Sarah ..." -> recipient = sarah
+    - "send an email to sarah ..." -> recipient = sarah
+    - If an actual email appears, return it.
+    """
+    t = text.strip()
+
+    m_email = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", t)
+    if m_email:
+        return m_email.group(0).lower()
+
+    m = re.search(r"\b(email|mail|send an email to|send email to)\s+([A-Za-z]+)\b", t, re.IGNORECASE)
+    if m:
+        return m.group(2).lower()
+
+    return None
+
+
+def _extract_topic(text: str) -> Optional[str]:
+    """
+    Very rough topic extraction: look for keywords that commonly appear in requests.
+    """
+    t = text.lower()
+    for kw in ["invoice", "contract", "proposal", "resume", "payment", "meeting", "follow up", "follow-up"]:
+        if kw in t:
+            return kw.replace(" ", "_")
+    return None
+
+
+def _extract_tone(text: str) -> str:
+    t = text.lower()
+    if "formal" in t or "professionally" in t or "professional" in t:
+        return "professional"
+    if "short" in t or "brief" in t:
+        return "short"
+    if "friendly" in t:
+        return "friendly"
+    return "professional"
+
+
+def _classify_intent_rules(text: str) -> str:
+    """
+    3 intents:
+    - meeting_scheduling
+    - email_drafting
+    - follow_up_reminder
+    """
+    t = text.lower()
+
+    # Follow-up / reminder intent first (so "schedule a follow-up" doesn't get treated as meeting scheduling)
+    if any(p in t for p in ["follow up", "follow-up", "remind me", "reminder", "check in"]):
+        return "follow_up_reminder"
+
+    # Email drafting
+    if any(p in t for p in ["email", "mail", "send an email", "draft an email", "write an email"]):
+        return "email_drafting"
+
+    # Meeting scheduling
+    if any(p in t for p in ["schedule", "set up a meeting", "find a time", "meet", "meeting", "calendar"]):
+        return "meeting_scheduling"
+
+    return "unknown"
+
+
+def _parse_with_rules(text: str) -> Dict[str, Any]:
+    intent = _classify_intent_rules(text)
+
+    entities: Dict[str, Any] = {}
+
+    if intent == "meeting_scheduling":
+        entities = {
+            "participants": _extract_participants(text),
+            "timeframe": _extract_timeframe(text),
+            "meeting_type": _extract_meeting_type(text),
+            "duration_min": 30,
+        }
+
+    elif intent == "email_drafting":
+        entities = {
+            "recipient": _extract_email_recipient(text),
+            "topic": _extract_topic(text),
+            "tone": _extract_tone(text),
+        }
+
+    elif intent == "follow_up_reminder":
+        entities = {
+            "timeframe": _extract_timeframe(text) or "next week",
+            "topic": _extract_topic(text),
+            "channel": "email",  # mock suggestion
+        }
+
+    return {
+        "intent": intent,
+        "entities": entities,
+        "mode": "fallback_rules",
+        "note": "Rule-based NLP used (LLM optional).",
+        "original_text": text,
+    }
 
 
 # -----------------------
@@ -105,33 +209,29 @@ def parse_intent_endpoint(payload: ParseIntentRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
 
-    # 1) Try AI intent parsing first
+    # Try AI parser first (if available). If quota/billing blocks it, fallback to rules.
     try:
-        result = parse_intent_ai(text)
-        # Add metadata for demos/debug
-        if isinstance(result, dict):
-            result["mode"] = "ai"
-        return result
+        ai_result = parse_intent_ai(text)
+        if isinstance(ai_result, dict):
+            # normalize to our contract if AI result is different
+            # If your intent.py already returns {intent, entities}, great.
+            if "entities" not in ai_result:
+                ai_result = {
+                    "intent": ai_result.get("intent", "unknown"),
+                    "entities": {k: v for k, v in ai_result.items() if k not in ["intent", "original_text", "mode", "note"]},
+                    "original_text": ai_result.get("original_text", text),
+                }
+            ai_result["mode"] = "ai"
+            return ai_result
 
-    # 2) If OpenAI quota/billing prevents calls, fallback to rule-based parsing
+        # If AI returned something unexpected, fallback
+        return _parse_with_rules(text)
+
     except RateLimitError:
-        participants = _extract_participants(text)
-        timeframe = _extract_timeframe(text)
-        meeting_type = _extract_meeting_type(text)
-
-        return {
-            "intent": "meeting_scheduling",
-            "participants": participants,
-            "timeframe": timeframe,
-            "meeting_type": meeting_type,
-            "original_text": text,
-            "mode": "fallback_rules",
-            "note": "AI unavailable (quota/billing). Returned rule-based intent parsing."
-        }
-
-    # 3) Any other unexpected error -> clean 500
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"parse_intent failed: {str(e)}")
+        return _parse_with_rules(text)
+    except Exception:
+        # Any other unexpected error: still return fallback so demo never breaks
+        return _parse_with_rules(text)
 
 
 @app.post("/suggest-times")
@@ -140,7 +240,6 @@ def suggest_times(payload: ParseIntentRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
 
-    # Mock suggestions (later: real calendar free/busy)
     now = datetime.now()
     options = [
         {"label": "Option A", "start": (now + timedelta(days=1, hours=10)).isoformat(), "duration_min": 30},
@@ -152,19 +251,20 @@ def suggest_times(payload: ParseIntentRequest):
         "intent": "meeting_scheduling",
         "options": options,
         "original_text": text,
+        "provider": "mock",
     }
 
 
 @app.post("/create-event")
 def create_event(req: CreateEventRequest):
-    # Mock event creation (later: Google Calendar / Outlook)
     return {
         "status": "created",
         "event": {
             "title": req.title,
             "start": req.start,
             "duration_min": req.duration_min,
-            "provider": "mock"
+            "provider": "mock",
         },
-        "message": "Event created successfully (mock)."
+        "message": "Event created successfully (mock).",
+        "provider": "mock",
     }
