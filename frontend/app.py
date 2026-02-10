@@ -10,9 +10,7 @@ API_BASE = "http://127.0.0.1:8000"
 # -----------------------
 st.set_page_config(page_title="ExecAI", layout="centered")
 st.title("ExecAI – Executive Assistant (MVP)")
-st.caption(
-    "Type a request → intent detected → decision made → suggested action → confirm (mock)."
-)
+st.caption("Type a request → intent detected → decision made → suggested action → confirm (mock).")
 
 # -----------------------
 # INPUT
@@ -35,6 +33,8 @@ if "selected" not in st.session_state:
     st.session_state.selected = None
 if "created_event" not in st.session_state:
     st.session_state.created_event = None
+if "email_draft" not in st.session_state:
+    st.session_state.email_draft = None
 
 col1, col2 = st.columns(2)
 
@@ -59,13 +59,37 @@ if col1.button("Run assistant"):
                 st.session_state.decision = data.get("decision", {})
                 st.session_state.options = st.session_state.decision.get("options", [])
 
+                # Reset outputs each run
                 st.session_state.selected = None
                 st.session_state.created_event = None
+                st.session_state.email_draft = None
 
-                if st.session_state.options:
-                    st.success("Meeting options generated ✅")
+                # If intent is email, call /draft-email (mock) and show the draft
+                intent = (st.session_state.intent_data.get("intent") or "").strip()
+                entities = st.session_state.intent_data.get("entities") or {}
+
+                if intent == "email_drafting":
+                    try:
+                        draft_res = requests.post(
+                            f"{API_BASE}/draft-email",
+                            json={
+                                "recipient": entities.get("recipient"),
+                                "topic": entities.get("topic"),
+                                "tone": entities.get("tone", "professional"),
+                                "original_text": user_input,
+                            },
+                            timeout=10,
+                        )
+                        draft_res.raise_for_status()
+                        st.session_state.email_draft = draft_res.json()
+                        st.success("Email draft generated ✅ (mock)")
+                    except Exception as e:
+                        st.error(f"Error drafting email: {e}")
                 else:
-                    st.info("Assistant ran successfully ✅")
+                    if st.session_state.options:
+                        st.success("Meeting options generated ✅")
+                    else:
+                        st.info("Assistant ran successfully ✅")
 
             except Exception as e:
                 st.error(f"Backend error: {e}")
@@ -76,6 +100,7 @@ if col2.button("Clear"):
     st.session_state.options = []
     st.session_state.selected = None
     st.session_state.created_event = None
+    st.session_state.email_draft = None
     st.rerun()
 
 # -----------------------
@@ -89,6 +114,13 @@ with st.expander("Debug (Intent + Decision)", expanded=False):
     if st.session_state.decision:
         st.markdown("### Decision / Orchestration")
         st.json(st.session_state.decision)
+
+# -----------------------
+# EMAIL DRAFT OUTPUT
+# -----------------------
+if st.session_state.email_draft:
+    st.subheader("Email draft (mock)")
+    st.json(st.session_state.email_draft)
 
 # -----------------------
 # MEETING OPTIONS
