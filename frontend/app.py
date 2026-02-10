@@ -6,43 +6,58 @@ API_BASE = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="ExecAI", layout="centered")
 st.title("ExecAI – Executive Assistant (MVP)")
-st.caption("Type a request → get 3 suggested meeting times → pick one → confirm (mock event).")
+st.caption("Type a request → intent detected → suggested action → pick a time → confirm (mock event).")
 
 user_input = st.text_area(
     "What would you like help with?",
     placeholder="Find a time for all four of us to meet next week",
 )
 
+# -----------------------
+# SESSION STATE
+# -----------------------
 if "options" not in st.session_state:
     st.session_state.options = []
 if "selected" not in st.session_state:
     st.session_state.selected = None
 if "created_event" not in st.session_state:
     st.session_state.created_event = None
+if "intent_data" not in st.session_state:
+    st.session_state.intent_data = {}
+if "decision" not in st.session_state:
+    st.session_state.decision = {}
 
 col1, col2 = st.columns(2)
 
-if col1.button("Suggest times"):
+# -----------------------
+# BUTTONS
+# -----------------------
+if col1.button("Run assistant"):
     if not user_input.strip():
         st.warning("Please enter a request.")
     else:
-        with st.spinner("Getting suggested time slots..."):
+        with st.spinner("Thinking..."):
             try:
                 res = requests.post(
-                    f"{API_BASE}/suggest-times",
+                    f"{API_BASE}/assistant",
                     json={"text": user_input},
                     timeout=10,
                 )
                 res.raise_for_status()
                 data = res.json()
-                st.session_state.options = data.get("options", [])
+
+                st.session_state.intent_data = data.get("intent_data", {})
+                st.session_state.decision = data.get("decision", {})
+                st.session_state.options = st.session_state.decision.get("options", [])
+
                 st.session_state.selected = None
                 st.session_state.created_event = None
 
                 if st.session_state.options:
-                    st.success("Suggested times loaded ✅")
+                    st.success("Assistant returned meeting options ✅")
                 else:
-                    st.warning("No options returned.")
+                    st.info("Assistant ran ✅ (no meeting options for this intent).")
+
             except Exception as e:
                 st.error(f"Backend error: {e}")
 
@@ -50,9 +65,24 @@ if col2.button("Clear"):
     st.session_state.options = []
     st.session_state.selected = None
     st.session_state.created_event = None
+    st.session_state.intent_data = {}
+    st.session_state.decision = {}
     st.rerun()
 
-# Show options + selection
+# -----------------------
+# DEBUG / TRANSPARENCY (capstone-friendly)
+# -----------------------
+with st.expander("Debug (intent + decision)", expanded=False):
+    if st.session_state.intent_data:
+        st.markdown("**Detected intent**")
+        st.json(st.session_state.intent_data)
+    if st.session_state.decision:
+        st.markdown("**Decision**")
+        st.json(st.session_state.decision)
+
+# -----------------------
+# SHOW OPTIONS + SELECTION (only if meeting options exist)
+# -----------------------
 if st.session_state.options:
     st.subheader("Suggested times")
 
@@ -98,6 +128,9 @@ if st.session_state.options:
             except Exception as e:
                 st.error(f"Error creating event: {e}")
 
+# -----------------------
+# SHOW RESULTS
+# -----------------------
 if st.session_state.selected:
     st.subheader("Selected slot")
     st.json(st.session_state.selected)
@@ -105,4 +138,3 @@ if st.session_state.selected:
 if st.session_state.created_event:
     st.subheader("Created event (mock)")
     st.json(st.session_state.created_event)
-
