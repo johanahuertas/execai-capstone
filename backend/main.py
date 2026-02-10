@@ -1,4 +1,7 @@
+# backend/main.py
 from datetime import datetime, timedelta
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -19,6 +22,13 @@ class CreateEventRequest(BaseModel):
     title: str
     start: str
     duration_min: int
+
+
+class DraftEmailRequest(BaseModel):
+    recipient: Optional[str] = None
+    topic: Optional[str] = None
+    tone: Optional[str] = "professional"
+    original_text: Optional[str] = None
 
 
 # -----------------------
@@ -43,7 +53,6 @@ def parse_intent_endpoint(payload: ParseIntentRequest):
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
-
     return parse_intent_ai(text)
 
 
@@ -108,4 +117,43 @@ def create_event(req: CreateEventRequest):
             "provider": "mock",
         },
         "message": "Event created successfully (mock).",
+    }
+
+
+@app.post("/draft-email")
+def draft_email(req: DraftEmailRequest):
+    """
+    Mock email drafting.
+    (Real email sending requires OAuth and is out of scope for now.)
+    """
+    recipient = (req.recipient or "the recipient").strip()
+    topic = (req.topic or "your request").strip()
+    tone = (req.tone or "professional").strip().lower()
+
+    subject = f"Regarding {topic.title()}" if topic else "Quick Follow-Up"
+
+    if tone == "friendly":
+        greeting = f"Hi {recipient},"
+        closing = "Thanks so much,\nExecAI (Draft)"
+    else:
+        greeting = f"Hello {recipient},"
+        closing = "Best regards,\nExecAI (Draft)"
+
+    body = (
+        f"{greeting}\n\n"
+        f"I hope you’re doing well. I’m reaching out regarding {topic}. "
+        f"Please let me know the best next step, and if you’d like, I can share any additional details.\n\n"
+        f"{closing}"
+    )
+
+    return {
+        "status": "drafted",
+        "email": {
+            "to": recipient,
+            "subject": subject,
+            "body": body,
+            "tone": tone,
+            "provider": "mock",
+        },
+        "message": "Email draft generated (mock).",
     }

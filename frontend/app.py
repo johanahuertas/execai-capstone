@@ -1,13 +1,22 @@
+# frontend/app.py
 import streamlit as st
 import requests
 from datetime import datetime
 
 API_BASE = "http://127.0.0.1:8000"
 
+# -----------------------
+# PAGE SETUP
+# -----------------------
 st.set_page_config(page_title="ExecAI", layout="centered")
 st.title("ExecAI – Executive Assistant (MVP)")
-st.caption("Type a request → intent detected → suggested action → pick a time → confirm (mock event).")
+st.caption(
+    "Type a request → intent detected → decision made → suggested action → confirm (mock)."
+)
 
+# -----------------------
+# INPUT
+# -----------------------
 user_input = st.text_area(
     "What would you like help with?",
     placeholder="Find a time for all four of us to meet next week",
@@ -16,27 +25,27 @@ user_input = st.text_area(
 # -----------------------
 # SESSION STATE
 # -----------------------
+if "intent_data" not in st.session_state:
+    st.session_state.intent_data = {}
+if "decision" not in st.session_state:
+    st.session_state.decision = {}
 if "options" not in st.session_state:
     st.session_state.options = []
 if "selected" not in st.session_state:
     st.session_state.selected = None
 if "created_event" not in st.session_state:
     st.session_state.created_event = None
-if "intent_data" not in st.session_state:
-    st.session_state.intent_data = {}
-if "decision" not in st.session_state:
-    st.session_state.decision = {}
 
 col1, col2 = st.columns(2)
 
 # -----------------------
-# BUTTONS
+# ACTION BUTTONS
 # -----------------------
 if col1.button("Run assistant"):
     if not user_input.strip():
         st.warning("Please enter a request.")
     else:
-        with st.spinner("Thinking..."):
+        with st.spinner("ExecAI is thinking..."):
             try:
                 res = requests.post(
                     f"{API_BASE}/assistant",
@@ -54,34 +63,35 @@ if col1.button("Run assistant"):
                 st.session_state.created_event = None
 
                 if st.session_state.options:
-                    st.success("Assistant returned meeting options ✅")
+                    st.success("Meeting options generated ✅")
                 else:
-                    st.info("Assistant ran ✅ (no meeting options for this intent).")
+                    st.info("Assistant ran successfully ✅")
 
             except Exception as e:
                 st.error(f"Backend error: {e}")
 
 if col2.button("Clear"):
+    st.session_state.intent_data = {}
+    st.session_state.decision = {}
     st.session_state.options = []
     st.session_state.selected = None
     st.session_state.created_event = None
-    st.session_state.intent_data = {}
-    st.session_state.decision = {}
     st.rerun()
 
 # -----------------------
-# DEBUG / TRANSPARENCY (capstone-friendly)
+# DEBUG / TRANSPARENCY
 # -----------------------
-with st.expander("Debug (intent + decision)", expanded=False):
+with st.expander("Debug (Intent + Decision)", expanded=False):
     if st.session_state.intent_data:
-        st.markdown("**Detected intent**")
+        st.markdown("### Detected intent")
         st.json(st.session_state.intent_data)
+
     if st.session_state.decision:
-        st.markdown("**Decision**")
+        st.markdown("### Decision / Orchestration")
         st.json(st.session_state.decision)
 
 # -----------------------
-# SHOW OPTIONS + SELECTION (only if meeting options exist)
+# MEETING OPTIONS
 # -----------------------
 if st.session_state.options:
     st.subheader("Suggested times")
@@ -129,7 +139,7 @@ if st.session_state.options:
                 st.error(f"Error creating event: {e}")
 
 # -----------------------
-# SHOW RESULTS
+# RESULTS
 # -----------------------
 if st.session_state.selected:
     st.subheader("Selected slot")
