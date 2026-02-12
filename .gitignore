@@ -1,7 +1,22 @@
+# Virtual environment
 venv/
+.venv/
+
+# Python cache
 __pycache__/
 *.pyc
+
+# macOS
 .DS_Store
+
+# Environment variables
 .env
+
+# Streamlit
 .streamlit/
+
+# Logs
 *.log
+
+# OAuth tokens
+backend/.tokens/
