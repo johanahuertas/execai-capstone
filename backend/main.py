@@ -7,11 +7,16 @@ from pydantic import BaseModel
 
 from .intent import parse_intent as parse_intent_ai
 from .orchestrator import handle_intent
-from .integrations import router as integrations_router  # ✅ NEW
+
+# ✅ Keep router endpoints
+from .integrations import router as integrations_router
+
+# ✅ NEW: import reusable services from integrations
+from .integrations import list_events_service, create_event_service
 
 app = FastAPI(title="ExecAI Backend")
 
-# ✅ NEW: mount integrations endpoints (Google/Microsoft mock)
+# Mount integrations endpoints (Google/Microsoft mock)
 app.include_router(integrations_router)
 
 
@@ -66,7 +71,7 @@ def assistant(payload: ParseIntentRequest):
     Main agent entry point.
 
     1) Understand intent (hybrid NLP)
-    2) Decide next action (orchestrator)
+    2) Execute action (calendar/email/etc.) when possible
     3) Return structured response to UI
     """
     text = (payload.text or "").strip()
@@ -76,9 +81,54 @@ def assistant(payload: ParseIntentRequest):
     intent_data = parse_intent_ai(text)
     decision = handle_intent(intent_data)
 
+    # -----------------------
+    # ✅ Connect /assistant -> integrations
+    # -----------------------
+    # We support two common intent shapes:
+    # - intent_data["intent"] == "list_events" / "create_event"
+    # - decision["action"] == "list_events" / "create_event"
+    action = (decision or {}).get("action") or (intent_data or {}).get("intent") or ""
+    action = str(action).lower().strip()
+
+    provider = (intent_data or {}).get("provider") or (decision or {}).get("provider") or "google"
+    provider = str(provider).lower().strip()
+
+    # Try to read params from common fields
+    days = (intent_data or {}).get("days") or (decision or {}).get("days") or 7
+
+    title = (intent_data or {}).get("title") or (decision or {}).get("title")
+    start = (intent_data or {}).get("start") or (decision or {}).get("start")
+    duration_min = (intent_data or {}).get("duration_min") or (decision or {}).get("duration_min") or 30
+
+    result = None
+
+    try:
+        if action in {"list_events", "calendar_list", "get_events"}:
+            result = list_events_service(provider=provider, days=int(days))
+        elif action in {"create_event", "calendar_create", "schedule_event"}:
+            if not title or not start:
+                # If NLP didn't extract enough, return a helpful response instead of failing.
+                result = {
+                    "status": "needs_clarification",
+                    "missing": [k for k in ["title", "start"] if not (title if k == "title" else start)],
+                    "message": "I can create the event, but I need at least a title and a start time.",
+                    "example": 'Try: "Create event: Team sync tomorrow at 2pm for 30 minutes"',
+                }
+            else:
+                result = create_event_service(
+                    provider=provider,
+                    title=str(title),
+                    start=str(start),
+                    duration_min=int(duration_min),
+                )
+    except HTTPException as e:
+        # Surface integration errors cleanly to the UI
+        result = {"status": "error", "where": "integrations", "detail": e.detail}
+
     return {
         "intent_data": intent_data,
         "decision": decision,
+        "result": result,
     }
 
 

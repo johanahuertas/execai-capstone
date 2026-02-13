@@ -13,7 +13,6 @@ _client = None
 if USE_LLM:
     try:
         from openai import OpenAI
-        from openai import OpenAIError
         _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     except Exception:
         # If openai isn't installed or fails to init, fallback silently
@@ -140,8 +139,72 @@ def _extract_topic(text: str) -> Optional[str]:
     return None
 
 
+# -----------------------
+# NEW: CALENDAR HELPERS
+# -----------------------
+def _looks_like_list_events(text: str) -> bool:
+    t = text.lower()
+    calendar_words = ["calendar", "events", "event", "schedule", "agenda"]
+    list_verbs = ["list", "show", "see", "get", "what's", "whats", "view"]
+    return any(w in t for w in calendar_words) and any(v in t for v in list_verbs)
+
+
+def _extract_days(text: str) -> int:
+    """
+    Extract 'days' from phrases like:
+    - "next 3 days"
+    - "for 7 days"
+    If not found, defaults to 7.
+    """
+    t = text.lower()
+
+    # explicit "next 3 days", "for 3 days"
+    m = re.search(r"\b(?:next|for)\s+(\d+)\s*day", t)
+    if m:
+        try:
+            n = int(m.group(1))
+            return max(1, min(n, 31))
+        except ValueError:
+            pass
+
+    # "tomorrow" => 1 day window
+    if "tomorrow" in t:
+        return 1
+    if "today" in t:
+        return 1
+
+    return 7
+
+
+def _looks_like_create_event(text: str) -> bool:
+    t = text.lower()
+    return any(
+        w in t
+        for w in [
+            "create event",
+            "add event",
+            "schedule event",
+            "book event",
+            "add to my calendar",
+            "put on my calendar",
+            "add an event",
+        ]
+    )
+
+
+# -----------------------
+# RULE-BASED CLASSIFIER
+# -----------------------
 def _classify_intent_rules(text: str) -> str:
     t = text.lower()
+
+    # calendar: list events
+    if _looks_like_list_events(t):
+        return "list_events"
+
+    # calendar: create event
+    if _looks_like_create_event(t):
+        return "create_event"
 
     # follow-up / reminder
     if any(w in t for w in ["follow up", "follow-up", "remind", "reminder"]):
@@ -163,7 +226,16 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
 
     entities: Dict[str, Any] = {}
 
-    if intent == "meeting_scheduling":
+    if intent == "list_events":
+        entities["days"] = _extract_days(text)
+
+    elif intent == "create_event":
+        # Keep it simple for now: send raw text + duration/timeframe hints if present.
+        entities["raw"] = text
+        entities["timeframe"] = _extract_timeframe(text)
+        entities["duration_min"] = _extract_duration_min(text) or 30
+
+    elif intent == "meeting_scheduling":
         entities["participants"] = _extract_participants(text)
         entities["timeframe"] = _extract_timeframe(text)
         entities["meeting_type"] = _extract_meeting_type(text)
@@ -195,7 +267,6 @@ def _safe_json_load(s: str) -> Optional[dict]:
     try:
         return json.loads(s)
     except Exception:
-        # try to extract json block if model adds text
         m = re.search(r"\{.*\}", s, re.DOTALL)
         if not m:
             return None
@@ -212,13 +283,20 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
     intent = obj.get("intent") if isinstance(obj, dict) else None
     entities = obj.get("entities") if isinstance(obj, dict) else None
 
-    if intent not in {"meeting_scheduling", "email_drafting", "follow_up_reminder", "unknown"}:
+    allowed = {
+        "meeting_scheduling",
+        "email_drafting",
+        "follow_up_reminder",
+        "list_events",
+        "create_event",
+        "unknown",
+    }
+    if intent not in allowed:
         intent = "unknown"
 
     if not isinstance(entities, dict):
         entities = {}
 
-    # Light normalization defaults
     if intent == "meeting_scheduling":
         entities.setdefault("participants", _extract_participants(text))
         entities.setdefault("timeframe", _extract_timeframe(text))
@@ -234,6 +312,14 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("timeframe", _extract_timeframe(text) or "next week")
         entities.setdefault("topic", _extract_topic(text))
         entities.setdefault("channel", "email")
+
+    if intent == "list_events":
+        entities.setdefault("days", _extract_days(text))
+
+    if intent == "create_event":
+        entities.setdefault("raw", text)
+        entities.setdefault("timeframe", _extract_timeframe(text))
+        entities.setdefault("duration_min", _extract_duration_min(text) or 30)
 
     return {
         "intent": intent,
@@ -255,7 +341,7 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
     system = (
         "You are an intent parser for an executive assistant. "
         "Return ONLY valid JSON with keys: intent, entities. "
-        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, unknown. "
+        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, list_events, create_event, unknown. "
         "entities should be an object. "
         "If unsure, use intent='unknown' and entities={}. "
         "Do NOT include extra text."
@@ -263,7 +349,6 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
 
     user = f"Text: {text}"
 
-    # Use a lightweight model name; you can change later
     resp = _client.chat.completions.create(
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
@@ -305,9 +390,11 @@ def parse_intent(text: str) -> Dict[str, Any]:
         try:
             return _parse_intent_llm(text)
         except Exception as e:
-            # quota/billing/auth/network/etc -> fallback
             out = _parse_intent_rules(text)
-            out["note"] = f"AI unavailable (quota/billing/auth/etc). Returned rule-based intent parsing. ({type(e).__name__})"
+            out["note"] = (
+                "AI unavailable (quota/billing/auth/etc). Returned rule-based intent parsing. "
+                f"({type(e).__name__})"
+            )
             return out
 
     return _parse_intent_rules(text)
