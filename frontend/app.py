@@ -86,8 +86,29 @@ if col1.button("Run assistant"):
                     except Exception as e:
                         st.error(f"Error drafting email: {e}")
                 else:
-                    if st.session_state.options:
-                        st.success("Meeting options generated ✅")
+                    # Show conflict warnings for create_event
+                    if intent == "create_event":
+                        decision = st.session_state.decision
+                        has_conflicts = decision.get("has_conflicts", False)
+                        if has_conflicts:
+                            st.warning(decision.get("message", "Conflict detected!"))
+                            for c in decision.get("conflicts", []):
+                                st.error(
+                                    f"🚫 **{c.get('title', 'Busy')}** — "
+                                    f"{c.get('start', '?')} to {c.get('end', '?')}"
+                                )
+                        else:
+                            st.success("✅ " + decision.get("message", "No conflicts."))
+
+                    # Show busy times for meeting scheduling
+                    elif st.session_state.options:
+                        busy_display = st.session_state.decision.get("busy_display", [])
+                        if busy_display:
+                            st.success("Meeting options generated ✅")
+                            st.warning("🚫 **Busy times:** " + " · ".join(busy_display))
+                        else:
+                            st.success("Meeting options generated ✅")
+
                     else:
                         st.info("Assistant ran successfully ✅")
 

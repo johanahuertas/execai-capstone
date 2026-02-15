@@ -3,12 +3,22 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from zoneinfo import ZoneInfo
 
+from .availability import (
+    find_available_slots,
+    timeframe_to_range,
+    check_conflicts,
+    get_busy_blocks,
+    get_mock_busy_blocks,
+    DEFAULT_TZ as AVAIL_TZ,
+)
+from .integrations import get_freebusy_service
+
 DEFAULT_PROVIDER = "google"
-DEFAULT_TZ = ZoneInfo("America/New_York")  # cámbialo si quieres
+DEFAULT_TZ = ZoneInfo("America/New_York")
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -162,26 +172,138 @@ def handle_intent(intent_data: dict) -> dict:
 
         title = _infer_event_title(raw)
         start_dt = _default_start_from_timeframe(timeframe, raw, DEFAULT_TZ)
+        end_dt = start_dt + timedelta(minutes=duration_min)
 
-        return {
+        # Pass through attendee info
+        attendee_emails = entities.get("attendee_emails", [])
+        attendee_names = entities.get("attendee_names", [])
+
+        # Check for conflicts (real Google if connected, otherwise mock)
+        try:
+            busy_blocks = get_busy_blocks(start_dt, DEFAULT_TZ, use_google=True)
+        except Exception:
+            busy_blocks = get_busy_blocks(start_dt, DEFAULT_TZ, use_google=False)
+
+        conflicts = check_conflicts(start_dt, end_dt, busy_blocks, DEFAULT_TZ)
+
+        result = {
             "action": "create_event",
             "intent": intent,
             "provider": DEFAULT_PROVIDER,
             "title": title,
-            "start": start_dt.isoformat(),  # incluye offset
+            "start": start_dt.isoformat(),
             "duration_min": duration_min,
-            "message": "Creating your event.",
+            "attendee_emails": attendee_emails,
+            "attendee_names": attendee_names,
         }
+
+        if conflicts:
+            conflict_strs = [
+                f"{c['title']} ({c['start']} – {c['end']})" for c in conflicts
+            ]
+            result["conflicts"] = conflicts
+            result["has_conflicts"] = True
+            result["message"] = (
+                f"Conflict detected! You are busy during: "
+                + ", ".join(conflict_strs)
+                + ". You can still create the event or pick a different time."
+            )
+        else:
+            result["has_conflicts"] = False
+            result["message"] = "No conflicts found. Creating your event."
+
+        return result
 
     # ---------- MEETING ----------
     if intent == "meeting_scheduling":
-        now = datetime.now()
-        options = [
-            {"label": "Option A", "start": (now + timedelta(days=1, hours=10)).isoformat(), "duration_min": 30},
-            {"label": "Option B", "start": (now + timedelta(days=2, hours=14)).isoformat(), "duration_min": 30},
-            {"label": "Option C", "start": (now + timedelta(days=3, hours=9)).isoformat(), "duration_min": 30},
-        ]
-        return {"action": "suggest_times", "intent": intent, "options": options}
+        timeframe = (entities.get("timeframe") or "").strip() or None
+        duration_min = _safe_int(entities.get("duration_min", 30), 30)
+        duration_min = max(5, min(duration_min, 240))
+        attendee_emails = entities.get("attendee_emails", [])
+        attendee_names = entities.get("attendee_names", [])
+
+        # Try real availability via Google FreeBusy
+        try:
+            search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)
+
+            freebusy_data = get_freebusy_service(
+                provider="google",
+                time_min=search_start.isoformat(),
+                time_max=search_end.isoformat(),
+            )
+
+            busy_blocks = freebusy_data.get("busy_blocks", [])
+
+            slots = find_available_slots(
+                busy_blocks=busy_blocks,
+                search_start=search_start,
+                search_end=search_end,
+                duration_min=duration_min,
+                tz=DEFAULT_TZ,
+            )
+
+            if slots:
+                return {
+                    "action": "suggest_times",
+                    "intent": intent,
+                    "provider": "google",
+                    "options": slots,
+                    "attendee_emails": attendee_emails,
+                    "attendee_names": attendee_names,
+                    "duration_min": duration_min,
+                    "source": "real_availability",
+                    "message": f"Found {len(slots)} available slot(s) based on your calendar.",
+                }
+
+            # No open slots found
+            return {
+                "action": "suggest_times",
+                "intent": intent,
+                "provider": "google",
+                "options": [],
+                "attendee_emails": attendee_emails,
+                "attendee_names": attendee_names,
+                "duration_min": duration_min,
+                "source": "real_availability",
+                "message": "No available slots found in that timeframe. Try a different day or time range.",
+            }
+
+        except Exception:
+            # Google not connected — use mock busy data with real availability engine
+            search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)
+            mock_busy = get_mock_busy_blocks(search_start, DEFAULT_TZ)
+
+            slots = find_available_slots(
+                busy_blocks=mock_busy,
+                search_start=search_start,
+                search_end=search_end,
+                duration_min=duration_min,
+                tz=DEFAULT_TZ,
+            )
+
+            # Build a display of what's busy so user can see the logic working
+            busy_display = [
+                f"{b.get('title', 'Busy')} ({datetime.fromisoformat(b['start']).strftime('%I:%M %p')}–{datetime.fromisoformat(b['end']).strftime('%I:%M %p')})"
+                for b in mock_busy
+            ]
+
+            return {
+                "action": "suggest_times",
+                "intent": intent,
+                "provider": "mock",
+                "options": slots,
+                "attendee_emails": attendee_emails,
+                "attendee_names": attendee_names,
+                "duration_min": duration_min,
+                "source": "mock_availability",
+                "busy_blocks": mock_busy,
+                "busy_display": busy_display,
+                "message": (
+                    "Google Calendar not connected — using simulated calendar. "
+                    f"Busy times: {', '.join(busy_display)}. "
+                    f"Found {len(slots)} available slot(s) that avoid conflicts."
+                ),
+            }
 
     # ---------- EMAIL (placeholder) ----------
     if intent == "email_drafting":

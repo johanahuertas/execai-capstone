@@ -4,7 +4,7 @@ import os
 import json
 import secrets
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 import zoneinfo
@@ -48,6 +48,15 @@ class CreateEventRequest(BaseModel):
     title: str
     start: str  # ISO datetime
     duration_min: int = 30
+    attendees: List[str] = []       # list of email addresses
+    description: str = ""           # optional event description
+    send_notifications: bool = True # email invitees
+
+
+class FreeBusyRequest(BaseModel):
+    time_min: str   # ISO datetime — start of window
+    time_max: str   # ISO datetime — end of window
+    calendar_ids: List[str] = ["primary"]
 
 
 # ===============================
@@ -286,7 +295,9 @@ def list_events_service(provider: str, days: int = 7) -> Dict[str, Any]:
     return {"provider": "google", "events": events}
 
 
-def create_event_service(provider: str, title: str, start: str, duration_min: int = 30) -> Dict[str, Any]:
+def create_event_service(provider: str, title: str, start: str, duration_min: int = 30,
+                         attendees: List[str] = None, description: str = "",
+                         send_notifications: bool = True) -> Dict[str, Any]:
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
@@ -304,7 +315,22 @@ def create_event_service(provider: str, title: str, start: str, duration_min: in
         "end": {"dateTime": end_dt.isoformat(), "timeZone": str(end_dt.tzinfo)},
     }
 
-    created = _google_api_post("/calendar/v3/calendars/primary/events", body)
+    # Add a description if one was provided
+    if description:
+        body["description"] = description
+
+    # Add attendees if they were provided
+    if attendees:
+        body["attendees"] = [{"email": email.strip()} for email in attendees if email.strip()]
+
+    # Control whether Google sends invitation emails
+    query_params = ""
+    if attendees and send_notifications:
+        query_params = "?sendUpdates=all"
+    elif attendees:
+        query_params = "?sendUpdates=none"
+
+    created = _google_api_post(f"/calendar/v3/calendars/primary/events{query_params}", body)
 
     return {
         "status": "created",
@@ -314,7 +340,57 @@ def create_event_service(provider: str, title: str, start: str, duration_min: in
             "start": (created.get("start", {}) or {}).get("dateTime") or (created.get("start", {}) or {}).get("date"),
             "end": (created.get("end", {}) or {}).get("dateTime") or (created.get("end", {}) or {}).get("date"),
             "htmlLink": created.get("htmlLink"),
+            "attendees": [
+                {"email": a.get("email"), "status": a.get("responseStatus", "needsAction")}
+                for a in (created.get("attendees") or [])
+            ],
         },
+    }
+
+
+def get_freebusy_service(
+    provider: str,
+    time_min: str,
+    time_max: str,
+    calendar_ids: List[str] = None,
+) -> Dict[str, Any]:
+    """
+    Query Google Calendar FreeBusy API to find busy time blocks.
+    """
+    if provider != "google":
+        raise HTTPException(status_code=400, detail="Only google supported")
+
+    if calendar_ids is None:
+        calendar_ids = ["primary"]
+
+    body = {
+        "timeMin": time_min,
+        "timeMax": time_max,
+        "timeZone": str(DEFAULT_TZ),
+        "items": [{"id": cid} for cid in calendar_ids],
+    }
+
+    data = _google_api_post("/calendar/v3/freeBusy", body)
+
+    # Extract busy blocks
+    busy_blocks: List[Dict[str, str]] = []
+    calendars = data.get("calendars", {})
+    for cal_id in calendar_ids:
+        cal_data = calendars.get(cal_id, {})
+        for block in cal_data.get("busy", []):
+            busy_blocks.append({
+                "start": block.get("start", ""),
+                "end": block.get("end", ""),
+            })
+
+    # Sort by start time
+    busy_blocks.sort(key=lambda b: b.get("start", ""))
+
+    return {
+        "provider": "google",
+        "time_min": time_min,
+        "time_max": time_max,
+        "busy_blocks": busy_blocks,
     }
 
 
@@ -366,4 +442,22 @@ def list_events(payload: ListEventsRequest):
 
 @router.post("/google/create-event")
 def create_event(payload: CreateEventRequest):
-    return create_event_service("google", payload.title, payload.start, payload.duration_min)
+    return create_event_service(
+        "google",
+        payload.title,
+        payload.start,
+        payload.duration_min,
+        attendees=payload.attendees,
+        description=payload.description,
+        send_notifications=payload.send_notifications,
+    )
+
+
+@router.post("/google/freebusy")
+def freebusy(payload: FreeBusyRequest):
+    return get_freebusy_service(
+        "google",
+        payload.time_min,
+        payload.time_max,
+        payload.calendar_ids,
+    )
