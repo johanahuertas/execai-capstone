@@ -4,10 +4,17 @@ import os
 import json
 import secrets
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 import zoneinfo
+
+# Option 1: load .env (but don't crash if python-dotenv isn't installed)
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except Exception:
+    pass
 
 import requests
 from fastapi import APIRouter, HTTPException
@@ -26,12 +33,12 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
 ]
 
-# Default timezone (change if needed)
 DEFAULT_TZ = zoneinfo.ZoneInfo("America/New_York")
 
 # ===============================
 # MODELS
 # ===============================
+
 
 class ListEventsRequest(BaseModel):
     days: int = 7
@@ -47,26 +54,23 @@ class CreateEventRequest(BaseModel):
 # GOOGLE OAUTH HELPERS
 # ===============================
 
-def _google_config() -> Dict[str, str]:
+
+def _google_config(required: bool = True) -> Dict[str, str]:
     cid = os.getenv("GOOGLE_CLIENT_ID", "").strip()
     secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
     redirect = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
 
-    if not cid or not secret or not redirect:
+    if required and (not cid or not secret or not redirect):
         raise HTTPException(
             status_code=500,
             detail="Missing GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI",
         )
 
-    return {
-        "client_id": cid,
-        "client_secret": secret,
-        "redirect_uri": redirect,
-    }
+    return {"client_id": cid, "client_secret": secret, "redirect_uri": redirect}
 
 
 def _google_build_auth_url() -> str:
-    cfg = _google_config()
+    cfg = _google_config(required=True)
     state = secrets.token_urlsafe(24)
     _OAUTH_STATE["google"] = state
 
@@ -93,84 +97,144 @@ def _save_google_token(token: Dict[str, Any]) -> None:
 def _load_google_token() -> Optional[Dict[str, Any]]:
     if not GOOGLE_TOKEN_PATH.exists():
         return None
-    return json.loads(GOOGLE_TOKEN_PATH.read_text(encoding="utf-8"))
+    try:
+        return json.loads(GOOGLE_TOKEN_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
-def _is_token_expired(token: Dict[str, Any]) -> bool:
-    expires_in = token.get("expires_in")
-    saved_at = token.get("saved_at")
+def _can_refresh(token: Dict[str, Any]) -> bool:
+    refresh_token = (token or {}).get("refresh_token")
+    if not refresh_token:
+        return False
 
-    if not expires_in or not saved_at:
-        return True
-
-    saved_dt = datetime.fromisoformat(saved_at)
-    expiry = saved_dt + timedelta(seconds=int(expires_in))
-    return datetime.now(timezone.utc) >= expiry
+    cfg = _google_config(required=False)
+    return bool(cfg["client_id"] and cfg["client_secret"] and cfg["redirect_uri"])
 
 
 def _refresh_google_token(token: Dict[str, Any]) -> Dict[str, Any]:
-    cfg = _google_config()
+    """
+    Refresh ONLY when we *actually need it* (after a 401),
+    and only if env vars + refresh_token exist.
+    """
+    refresh_token = token.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Google token expired and no refresh_token is available. Reconnect Google.",
+        )
+
+    cfg = _google_config(required=False)
+    if not (cfg["client_id"] and cfg["client_secret"] and cfg["redirect_uri"]):
+        raise HTTPException(
+            status_code=400,
+            detail="Google token expired and refresh requires GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI. Set them in .env or reconnect Google.",
+        )
 
     r = requests.post(
         "https://oauth2.googleapis.com/token",
         data={
             "client_id": cfg["client_id"],
             "client_secret": cfg["client_secret"],
-            "refresh_token": token["refresh_token"],
+            "refresh_token": refresh_token,
             "grant_type": "refresh_token",
         },
+        timeout=20,
     )
 
     if r.status_code != 200:
         raise HTTPException(status_code=400, detail=r.text)
 
     refreshed = r.json()
-    refreshed["refresh_token"] = token["refresh_token"]
+    refreshed["refresh_token"] = refresh_token  # keep it
     _save_google_token(refreshed)
     return refreshed
 
 
 def _get_google_access_token() -> str:
+    """
+    IMPORTANT: Do NOT require env vars for normal usage.
+    Just return the saved access token. Refresh happens only on 401.
+    """
     token = _load_google_token()
     if not token:
         raise HTTPException(status_code=400, detail="Google not connected.")
 
-    if _is_token_expired(token):
-        token = _refresh_google_token(token)
+    access = token.get("access_token")
+    if not access:
+        raise HTTPException(status_code=400, detail="Missing access_token. Reconnect Google.")
 
-    return token["access_token"]
+    return access
 
 
 # ===============================
-# GOOGLE API CALLS
+# GOOGLE API CALLS (retry on 401)
 # ===============================
+
 
 def _google_api_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"https://www.googleapis.com{path}"
     token = _get_google_access_token()
+
     r = requests.get(
-        f"https://www.googleapis.com{path}",
+        url,
         headers={"Authorization": f"Bearer {token}"},
         params=params,
+        timeout=20,
     )
 
+    if r.status_code == 401:
+        saved = _load_google_token() or {}
+        if _can_refresh(saved):
+            refreshed = _refresh_google_token(saved)
+            token2 = refreshed.get("access_token")
+            r = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {token2}"},
+                params=params,
+                timeout=20,
+            )
+
     if r.status_code >= 400:
+        if r.status_code == 401:
+            raise HTTPException(
+                status_code=400,
+                detail="Google access token expired. Reconnect Google (or set GOOGLE_CLIENT_* env vars to refresh).",
+            )
         raise HTTPException(status_code=400, detail=r.text)
 
     return r.json()
 
 
 def _google_api_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"https://www.googleapis.com{path}"
     token = _get_google_access_token()
+
     r = requests.post(
-        f"https://www.googleapis.com{path}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         json=body,
+        timeout=20,
     )
 
+    if r.status_code == 401:
+        saved = _load_google_token() or {}
+        if _can_refresh(saved):
+            refreshed = _refresh_google_token(saved)
+            token2 = refreshed.get("access_token")
+            r = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {token2}", "Content-Type": "application/json"},
+                json=body,
+                timeout=20,
+            )
+
     if r.status_code >= 400:
+        if r.status_code == 401:
+            raise HTTPException(
+                status_code=400,
+                detail="Google access token expired. Reconnect Google (or set GOOGLE_CLIENT_* env vars to refresh).",
+            )
         raise HTTPException(status_code=400, detail=r.text)
 
     return r.json()
@@ -180,9 +244,12 @@ def _google_api_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
 # SERVICES
 # ===============================
 
-def list_events_service(provider: str, days: int = 7):
+
+def list_events_service(provider: str, days: int = 7) -> Dict[str, Any]:
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
+
+    days = max(1, min(int(days), 31))
 
     now = datetime.now(timezone.utc)
     time_min = now.isoformat()
@@ -200,25 +267,32 @@ def list_events_service(provider: str, days: int = 7):
 
     events = []
     for e in data.get("items", []):
-        events.append({
-            "id": e.get("id"),
-            "title": e.get("summary"),
-            "start": e.get("start", {}).get("dateTime"),
-            "end": e.get("end", {}).get("dateTime"),
-            "htmlLink": e.get("htmlLink"),
-        })
+        start_obj = e.get("start", {}) or {}
+        end_obj = e.get("end", {}) or {}
+
+        start_val = start_obj.get("dateTime") or start_obj.get("date")
+        end_val = end_obj.get("dateTime") or end_obj.get("date")
+
+        events.append(
+            {
+                "id": e.get("id"),
+                "title": e.get("summary"),
+                "start": start_val,
+                "end": end_val,
+                "htmlLink": e.get("htmlLink"),
+            }
+        )
 
     return {"provider": "google", "events": events}
 
 
-def create_event_service(provider: str, title: str, start: str, duration_min: int = 30):
+def create_event_service(provider: str, title: str, start: str, duration_min: int = 30) -> Dict[str, Any]:
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
-    # Parse ISO datetime
-    start_dt = datetime.fromisoformat(start)
+    duration_min = max(5, min(int(duration_min), 240))
 
-    # If no timezone provided → attach default
+    start_dt = datetime.fromisoformat(start)
     if start_dt.tzinfo is None:
         start_dt = start_dt.replace(tzinfo=DEFAULT_TZ)
 
@@ -226,14 +300,8 @@ def create_event_service(provider: str, title: str, start: str, duration_min: in
 
     body = {
         "summary": title,
-        "start": {
-            "dateTime": start_dt.isoformat(),
-            "timeZone": str(start_dt.tzinfo),
-        },
-        "end": {
-            "dateTime": end_dt.isoformat(),
-            "timeZone": str(end_dt.tzinfo),
-        },
+        "start": {"dateTime": start_dt.isoformat(), "timeZone": str(start_dt.tzinfo)},
+        "end": {"dateTime": end_dt.isoformat(), "timeZone": str(end_dt.tzinfo)},
     }
 
     created = _google_api_post("/calendar/v3/calendars/primary/events", body)
@@ -243,8 +311,8 @@ def create_event_service(provider: str, title: str, start: str, duration_min: in
         "event": {
             "id": created.get("id"),
             "title": created.get("summary"),
-            "start": created.get("start", {}).get("dateTime"),
-            "end": created.get("end", {}).get("dateTime"),
+            "start": (created.get("start", {}) or {}).get("dateTime") or (created.get("start", {}) or {}).get("date"),
+            "end": (created.get("end", {}) or {}).get("dateTime") or (created.get("end", {}) or {}).get("date"),
             "htmlLink": created.get("htmlLink"),
         },
     }
@@ -253,6 +321,7 @@ def create_event_service(provider: str, title: str, start: str, duration_min: in
 # ===============================
 # ENDPOINTS
 # ===============================
+
 
 @router.get("/status")
 def status():
@@ -266,7 +335,10 @@ def auth_url():
 
 @router.get("/google/callback")
 def callback(code: str, state: str):
-    cfg = _google_config()
+    if not state or state != _OAUTH_STATE.get("google"):
+        raise HTTPException(status_code=400, detail="Invalid or missing OAuth state.")
+
+    cfg = _google_config(required=True)
 
     r = requests.post(
         "https://oauth2.googleapis.com/token",
@@ -277,6 +349,7 @@ def callback(code: str, state: str):
             "redirect_uri": cfg["redirect_uri"],
             "grant_type": "authorization_code",
         },
+        timeout=20,
     )
 
     if r.status_code != 200:
@@ -293,9 +366,4 @@ def list_events(payload: ListEventsRequest):
 
 @router.post("/google/create-event")
 def create_event(payload: CreateEventRequest):
-    return create_event_service(
-        "google",
-        payload.title,
-        payload.start,
-        payload.duration_min,
-    )
+    return create_event_service("google", payload.title, payload.start, payload.duration_min)

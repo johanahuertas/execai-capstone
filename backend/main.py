@@ -1,22 +1,20 @@
 # backend/main.py
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from .intent import parse_intent as parse_intent_ai
 from .orchestrator import handle_intent
-
-# ✅ Keep router endpoints
 from .integrations import router as integrations_router
 
-# ✅ NEW: import reusable services from integrations
+# ✅ Reusable services (Google real + mock)
 from .integrations import list_events_service, create_event_service
 
 app = FastAPI(title="ExecAI Backend")
 
-# Mount integrations endpoints (Google/Microsoft mock)
+# Mount integrations endpoints
 app.include_router(integrations_router)
 
 
@@ -30,7 +28,7 @@ class ParseIntentRequest(BaseModel):
 class CreateEventRequest(BaseModel):
     title: str
     start: str
-    duration_min: int
+    duration_min: int = 30
 
 
 class DraftEmailRequest(BaseModel):
@@ -50,15 +48,6 @@ def health_check():
 
 @app.post("/parse-intent")
 def parse_intent_endpoint(payload: ParseIntentRequest):
-    """
-    Hybrid NLP endpoint.
-
-    Uses:
-    - LLM-based intent parsing (OpenAI) IF enabled
-    - Rule-based NLP fallback otherwise
-
-    The decision logic lives in intent.py.
-    """
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
@@ -71,8 +60,9 @@ def assistant(payload: ParseIntentRequest):
     Main agent entry point.
 
     1) Understand intent (hybrid NLP)
-    2) Execute action (calendar/email/etc.) when possible
-    3) Return structured response to UI
+    2) Orchestrator decides (and may execute)
+    3) If orchestrator didn't execute, main executes via integrations services
+    4) Return structured response
     """
     text = (payload.text or "").strip()
     if not text:
@@ -81,38 +71,45 @@ def assistant(payload: ParseIntentRequest):
     intent_data = parse_intent_ai(text)
     decision = handle_intent(intent_data)
 
+    # If orchestrator already produced a result, return it as-is
+    existing_result = (decision or {}).get("result")
+    if existing_result is not None:
+        return {
+            "intent_data": intent_data,
+            "decision": decision,
+            "result": existing_result,
+        }
+
     # -----------------------
-    # ✅ Connect /assistant -> integrations
+    # Fallback execution in main.py (if orchestrator only "decided")
     # -----------------------
-    # We support two common intent shapes:
-    # - intent_data["intent"] == "list_events" / "create_event"
-    # - decision["action"] == "list_events" / "create_event"
-    action = (decision or {}).get("action") or (intent_data or {}).get("intent") or ""
-    action = str(action).lower().strip()
+    entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
 
-    provider = (intent_data or {}).get("provider") or (decision or {}).get("provider") or "google"
-    provider = str(provider).lower().strip()
-
-    # Try to read params from common fields
-    days = (intent_data or {}).get("days") or (decision or {}).get("days") or 7
-
-    title = (intent_data or {}).get("title") or (decision or {}).get("title")
-    start = (intent_data or {}).get("start") or (decision or {}).get("start")
-    duration_min = (intent_data or {}).get("duration_min") or (decision or {}).get("duration_min") or 30
+    action = ((decision or {}).get("action") or (intent_data or {}).get("intent") or "").lower().strip()
+    provider = ((decision or {}).get("provider") or "google").lower().strip()
 
     result = None
 
     try:
+        # LIST EVENTS
         if action in {"list_events", "calendar_list", "get_events"}:
+            days = (decision or {}).get("days")
+            if days is None:
+                days = entities.get("days", 7)
             result = list_events_service(provider=provider, days=int(days))
+
+        # CREATE EVENT
         elif action in {"create_event", "calendar_create", "schedule_event"}:
+            title = (decision or {}).get("title") or entities.get("title")
+            start = (decision or {}).get("start") or entities.get("start")
+            duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
+
             if not title or not start:
-                # If NLP didn't extract enough, return a helpful response instead of failing.
                 result = {
                     "status": "needs_clarification",
                     "missing": [k for k in ["title", "start"] if not (title if k == "title" else start)],
                     "message": "I can create the event, but I need at least a title and a start time.",
-                    "example": 'Try: "Create event: Team sync tomorrow at 2pm for 30 minutes"',
+                    "example": 'Try: "Create an event called Strategy Sync tomorrow at 2pm for 30 minutes"',
                 }
             else:
                 result = create_event_service(
@@ -121,9 +118,11 @@ def assistant(payload: ParseIntentRequest):
                     start=str(start),
                     duration_min=int(duration_min),
                 )
+
     except HTTPException as e:
-        # Surface integration errors cleanly to the UI
         result = {"status": "error", "where": "integrations", "detail": e.detail}
+    except Exception as e:
+        result = {"status": "error", "where": "assistant", "detail": f"{type(e).__name__}: {str(e)}"}
 
     return {
         "intent_data": intent_data,
@@ -134,10 +133,6 @@ def assistant(payload: ParseIntentRequest):
 
 @app.post("/suggest-times")
 def suggest_times(payload: ParseIntentRequest):
-    """
-    Mock meeting availability.
-    (Real calendar integrations are intentionally out of scope for capstone.)
-    """
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
@@ -148,20 +143,12 @@ def suggest_times(payload: ParseIntentRequest):
         {"label": "Option B", "start": (now + timedelta(days=2, hours=14)).isoformat(), "duration_min": 30},
         {"label": "Option C", "start": (now + timedelta(days=3, hours=9)).isoformat(), "duration_min": 30},
     ]
-
-    return {
-        "intent": "meeting_scheduling",
-        "options": options,
-        "provider": "mock",
-    }
+    return {"intent": "meeting_scheduling", "options": options, "provider": "mock"}
 
 
 @app.post("/create-event")
 def create_event(req: CreateEventRequest):
-    """
-    Mock event creation.
-    (Real calendar writes require OAuth and is out of scope.)
-    """
+    # Mock event creation endpoint (separado de Google real)
     return {
         "status": "created",
         "event": {
@@ -176,10 +163,6 @@ def create_event(req: CreateEventRequest):
 
 @app.post("/draft-email")
 def draft_email(req: DraftEmailRequest):
-    """
-    Mock email drafting.
-    (Real email sending requires OAuth and is out of scope for now.)
-    """
     recipient = (req.recipient or "the recipient").strip()
     topic = (req.topic or "your request").strip()
     tone = (req.tone or "professional").strip().lower()
@@ -202,12 +185,6 @@ def draft_email(req: DraftEmailRequest):
 
     return {
         "status": "drafted",
-        "email": {
-            "to": recipient,
-            "subject": subject,
-            "body": body,
-            "tone": tone,
-            "provider": "mock",
-        },
+        "email": {"to": recipient, "subject": subject, "body": body, "tone": tone, "provider": "mock"},
         "message": "Email draft generated (mock).",
     }
