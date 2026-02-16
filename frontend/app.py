@@ -35,6 +35,8 @@ if "created_event" not in st.session_state:
     st.session_state.created_event = None
 if "email_draft" not in st.session_state:
     st.session_state.email_draft = None
+if "assistant_result" not in st.session_state:
+    st.session_state.assistant_result = None  # NEW
 
 col1, col2 = st.columns(2)
 
@@ -50,7 +52,7 @@ if col1.button("Run assistant"):
                 res = requests.post(
                     f"{API_BASE}/assistant",
                     json={"text": user_input},
-                    timeout=10,
+                    timeout=15,
                 )
                 res.raise_for_status()
                 data = res.json()
@@ -58,6 +60,7 @@ if col1.button("Run assistant"):
                 st.session_state.intent_data = data.get("intent_data", {})
                 st.session_state.decision = data.get("decision", {})
                 st.session_state.options = st.session_state.decision.get("options", [])
+                st.session_state.assistant_result = data.get("result")  # NEW
 
                 # Reset outputs each run
                 st.session_state.selected = None
@@ -122,6 +125,7 @@ if col2.button("Clear"):
     st.session_state.selected = None
     st.session_state.created_event = None
     st.session_state.email_draft = None
+    st.session_state.assistant_result = None  # NEW
     st.rerun()
 
 # -----------------------
@@ -136,15 +140,68 @@ with st.expander("Debug (Intent + Decision)", expanded=False):
         st.markdown("### Decision / Orchestration")
         st.json(st.session_state.decision)
 
+    if st.session_state.assistant_result is not None:  # NEW
+        st.markdown("### Result")
+        st.json(st.session_state.assistant_result)
+
 # -----------------------
-# EMAIL DRAFT OUTPUT
+# GOOGLE CALENDAR OUTPUT (REAL)
+# -----------------------
+action = (st.session_state.decision.get("action") or "").strip()
+result = st.session_state.assistant_result
+
+# show integration error nicely
+if isinstance(result, dict) and result.get("status") == "error":
+    st.error(f"Integration error: {result.get('detail', 'Unknown error')}")
+
+# list events nicely
+if action == "list_events" and isinstance(result, dict) and "events" in result:
+    st.subheader("📅 Upcoming events")
+    events = result.get("events") or []
+    if not events:
+        st.info("No events found in that time range.")
+    else:
+        for e in events:
+            title = e.get("title") or "(No title)"
+            start = e.get("start") or ""
+            end = e.get("end") or ""
+            link = e.get("htmlLink")
+
+            pretty_start = start
+            pretty_end = end
+            try:
+                pretty_start = datetime.fromisoformat(start).strftime("%a %b %d, %I:%M %p")
+            except Exception:
+                pass
+            try:
+                pretty_end = datetime.fromisoformat(end).strftime("%I:%M %p")
+            except Exception:
+                pass
+
+            st.markdown(f"**{title}**  \n🕒 {pretty_start} → {pretty_end}")
+            if link:
+                st.markdown(f"[Open in Google Calendar]({link})")
+            st.divider()
+
+# create event nicely
+if action == "create_event" and isinstance(result, dict) and result.get("status") == "created":
+    st.subheader("✅ Event created")
+    ev = result.get("event") or {}
+    st.markdown(f"**{ev.get('title', '(No title)')}**")
+    if ev.get("start"):
+        st.markdown(f"🕒 {ev.get('start')}")
+    if ev.get("htmlLink"):
+        st.markdown(f"[Open in Google Calendar]({ev['htmlLink']})")
+
+# -----------------------
+# EMAIL DRAFT OUTPUT (MOCK)
 # -----------------------
 if st.session_state.email_draft:
     st.subheader("Email draft (mock)")
     st.json(st.session_state.email_draft)
 
 # -----------------------
-# MEETING OPTIONS
+# MEETING OPTIONS (MOCK)
 # -----------------------
 if st.session_state.options:
     st.subheader("Suggested times")
@@ -192,7 +249,7 @@ if st.session_state.options:
                 st.error(f"Error creating event: {e}")
 
 # -----------------------
-# RESULTS
+# RESULTS (MOCK meeting flow)
 # -----------------------
 if st.session_state.selected:
     st.subheader("Selected slot")
