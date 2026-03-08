@@ -31,6 +31,8 @@ _OAUTH_STATE = {"google": None}
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.compose",
 ]
 
 DEFAULT_TZ = zoneinfo.ZoneInfo("America/New_York")
@@ -48,15 +50,19 @@ class CreateEventRequest(BaseModel):
     title: str
     start: str  # ISO datetime
     duration_min: int = 30
-    attendees: List[str] = []       # list of email addresses
-    description: str = ""           # optional event description
-    send_notifications: bool = True # email invitees
+    attendees: List[str] = []
+    description: str = ""
+    send_notifications: bool = True
 
 
 class FreeBusyRequest(BaseModel):
-    time_min: str   # ISO datetime — start of window
-    time_max: str   # ISO datetime — end of window
+    time_min: str  # ISO datetime — start of window
+    time_max: str  # ISO datetime — end of window
     calendar_ids: List[str] = ["primary"]
+
+
+class ListEmailsRequest(BaseModel):
+    max_results: int = 10
 
 
 # ===============================
@@ -75,7 +81,11 @@ def _google_config(required: bool = True) -> Dict[str, str]:
             detail="Missing GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI",
         )
 
-    return {"client_id": cid, "client_secret": secret, "redirect_uri": redirect}
+    return {
+        "client_id": cid,
+        "client_secret": secret,
+        "redirect_uri": redirect,
+    }
 
 
 def _google_build_auth_url() -> str:
@@ -295,9 +305,15 @@ def list_events_service(provider: str, days: int = 7) -> Dict[str, Any]:
     return {"provider": "google", "events": events}
 
 
-def create_event_service(provider: str, title: str, start: str, duration_min: int = 30,
-                         attendees: List[str] = None, description: str = "",
-                         send_notifications: bool = True) -> Dict[str, Any]:
+def create_event_service(
+    provider: str,
+    title: str,
+    start: str,
+    duration_min: int = 30,
+    attendees: Optional[List[str]] = None,
+    description: str = "",
+    send_notifications: bool = True,
+) -> Dict[str, Any]:
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
@@ -315,15 +331,12 @@ def create_event_service(provider: str, title: str, start: str, duration_min: in
         "end": {"dateTime": end_dt.isoformat(), "timeZone": str(end_dt.tzinfo)},
     }
 
-    # Add a description if one was provided
     if description:
         body["description"] = description
 
-    # Add attendees if they were provided
     if attendees:
-        body["attendees"] = [{"email": email.strip()} for email in attendees if email.strip()]
+        body["attendees"] = [{"email": email.strip()} for email in attendees if email and email.strip()]
 
-    # Control whether Google sends invitation emails
     query_params = ""
     if attendees and send_notifications:
         query_params = "?sendUpdates=all"
@@ -352,7 +365,7 @@ def get_freebusy_service(
     provider: str,
     time_min: str,
     time_max: str,
-    calendar_ids: List[str] = None,
+    calendar_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Query Google Calendar FreeBusy API to find busy time blocks.
@@ -372,18 +385,18 @@ def get_freebusy_service(
 
     data = _google_api_post("/calendar/v3/freeBusy", body)
 
-    # Extract busy blocks
     busy_blocks: List[Dict[str, str]] = []
     calendars = data.get("calendars", {})
     for cal_id in calendar_ids:
         cal_data = calendars.get(cal_id, {})
         for block in cal_data.get("busy", []):
-            busy_blocks.append({
-                "start": block.get("start", ""),
-                "end": block.get("end", ""),
-            })
+            busy_blocks.append(
+                {
+                    "start": block.get("start", ""),
+                    "end": block.get("end", ""),
+                }
+            )
 
-    # Sort by start time
     busy_blocks.sort(key=lambda b: b.get("start", ""))
 
     return {
@@ -391,6 +404,64 @@ def get_freebusy_service(
         "time_min": time_min,
         "time_max": time_max,
         "busy_blocks": busy_blocks,
+    }
+
+
+def list_emails_service(provider: str, max_results: int = 10) -> Dict[str, Any]:
+    """
+    List recent Gmail messages with basic metadata.
+    """
+    if provider != "google":
+        raise HTTPException(status_code=400, detail="Only google supported")
+
+    max_results = max(1, min(int(max_results), 20))
+
+    data = _google_api_get(
+        "/gmail/v1/users/me/messages",
+        {
+            "maxResults": max_results,
+        },
+    )
+
+    messages = data.get("messages", []) or []
+    emails = []
+
+    for msg in messages:
+        msg_id = msg.get("id")
+        if not msg_id:
+            continue
+
+        detail = _google_api_get(
+            f"/gmail/v1/users/me/messages/{msg_id}",
+            {
+                "format": "metadata",
+                "metadataHeaders": ["From", "Subject", "Date"],
+            },
+        )
+
+        headers = (detail.get("payload", {}) or {}).get("headers", []) or []
+
+        header_map = {}
+        for h in headers:
+            name = h.get("name")
+            value = h.get("value")
+            if name and value:
+                header_map[name.lower()] = value
+
+        emails.append(
+            {
+                "id": msg_id,
+                "threadId": detail.get("threadId"),
+                "from": header_map.get("from"),
+                "subject": header_map.get("subject"),
+                "date": header_map.get("date"),
+                "snippet": detail.get("snippet"),
+            }
+        )
+
+    return {
+        "provider": "google",
+        "emails": emails,
     }
 
 
@@ -461,3 +532,8 @@ def freebusy(payload: FreeBusyRequest):
         payload.time_max,
         payload.calendar_ids,
     )
+
+
+@router.get("/google/list-emails")
+def list_emails(max_results: int = 10):
+    return list_emails_service("google", max_results)
