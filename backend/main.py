@@ -9,10 +9,17 @@ from .intent import parse_intent as parse_intent_ai
 from .orchestrator import handle_intent
 from .integrations import router as integrations_router
 
-from .integrations import list_events_service, create_event_service, list_emails_service
+# ✅ Reusable services
+from .integrations import (
+    list_events_service,
+    create_event_service,
+    list_emails_service,
+    create_gmail_draft_service,
+)
 
 app = FastAPI(title="ExecAI Backend")
 
+# Mount integrations endpoints
 app.include_router(integrations_router)
 
 
@@ -58,8 +65,8 @@ def assistant(payload: ParseIntentRequest):
     Main agent entry point.
 
     1) Understand intent (hybrid NLP)
-    2) Orchestrator decides (and may execute)
-    3) If orchestrator didn't execute, main executes via integrations services
+    2) Orchestrator decides
+    3) main.py executes integrations when needed
     4) Return structured response
     """
     text = (payload.text or "").strip()
@@ -69,7 +76,6 @@ def assistant(payload: ParseIntentRequest):
     intent_data = parse_intent_ai(text)
     decision = handle_intent(intent_data)
 
-    # If orchestrator already produced a result, return it as-is
     existing_result = (decision or {}).get("result")
     if existing_result is not None:
         return {
@@ -77,7 +83,6 @@ def assistant(payload: ParseIntentRequest):
             "decision": decision,
             "result": existing_result,
         }
-
 
     entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
 
@@ -87,7 +92,9 @@ def assistant(payload: ParseIntentRequest):
     result = None
 
     try:
+        # -----------------------
         # LIST EVENTS
+        # -----------------------
         if action in {"list_events", "calendar_list", "get_events"}:
             days = (decision or {}).get("days")
             if days is None:
@@ -98,12 +105,13 @@ def assistant(payload: ParseIntentRequest):
                 days=int(days),
             )
 
+        # -----------------------
         # CREATE EVENT
+        # -----------------------
         elif action in {"create_event", "calendar_create", "schedule_event"}:
             title = (decision or {}).get("title") or entities.get("title")
             start = (decision or {}).get("start") or entities.get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
-
             attendee_emails = (decision or {}).get("attendee_emails") or entities.get("attendee_emails") or []
 
             if not title or not start:
@@ -122,7 +130,9 @@ def assistant(payload: ParseIntentRequest):
                     attendees=attendee_emails,
                 )
 
+        # -----------------------
         # LIST EMAILS
+        # -----------------------
         elif action in {"list_emails", "get_emails", "show_inbox"}:
             max_results = (decision or {}).get("max_results")
             if max_results is None:
@@ -132,6 +142,36 @@ def assistant(payload: ParseIntentRequest):
                 provider=provider,
                 max_results=int(max_results),
             )
+
+        # -----------------------
+        # CREATE GMAIL DRAFT
+        # -----------------------
+        elif action in {"create_draft", "draft_email"}:
+            recipient = (decision or {}).get("recipient") or entities.get("recipient")
+            subject = (decision or {}).get("subject") or entities.get("subject") or "Quick Follow-Up"
+            body = (decision or {}).get("body") or entities.get("body_hint") or ""
+
+            if not recipient:
+                result = {
+                    "status": "needs_clarification",
+                    "missing": ["recipient"],
+                    "message": "I can create the Gmail draft, but I need the recipient email address.",
+                    "example": 'Try: "Draft an email to sarah@example.com about the proposal"',
+                }
+            elif "@" not in str(recipient):
+                result = {
+                    "status": "needs_clarification",
+                    "missing": ["recipient_email"],
+                    "message": f'I understood the recipient as "{recipient}", but I need the full email address to create a real Gmail draft.',
+                    "example": f'Draft an email to {recipient}@example.com about the proposal',
+                }
+            else:
+                result = create_gmail_draft_service(
+                    provider=provider,
+                    to=str(recipient),
+                    subject=str(subject),
+                    body=str(body),
+                )
 
     except HTTPException as e:
         result = {
@@ -174,7 +214,6 @@ def suggest_times(payload: ParseIntentRequest):
 
 @app.post("/create-event")
 def create_event(req: CreateEventRequest):
-    # Mock event creation endpoint (separado de Google real)
     return {
         "status": "created",
         "event": {

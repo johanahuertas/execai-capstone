@@ -13,7 +13,6 @@ from .availability import (
     check_conflicts,
     get_busy_blocks,
     get_mock_busy_blocks,
-    DEFAULT_TZ as AVAIL_TZ,
 )
 from .integrations import get_freebusy_service
 
@@ -29,24 +28,16 @@ def _safe_int(value: Any, default: int) -> int:
 
 
 def _infer_event_title(raw_text: str) -> str:
-    """
-    Heurística simple:
-    - "create event called X" -> X
-    - Limpia timeframe al final (tomorrow/today/next week/this week)
-    - Si no encuentra, título genérico
-    """
     t = (raw_text or "").strip()
     if not t:
         return "New Event"
 
     title = None
 
-    # called "X"
     m = re.search(r'called\s+"([^"]+)"', t, re.IGNORECASE)
     if m:
         title = m.group(1).strip()
 
-    # called X...
     if not title:
         m2 = re.search(r"called\s+(.+)", t, re.IGNORECASE)
         if m2:
@@ -55,24 +46,16 @@ def _infer_event_title(raw_text: str) -> str:
     if not title:
         return "ExecAI Event"
 
-    # remove trailing timeframe words/phrases
     title = re.sub(r"\b(tomorrow|today)\b\s*$", "", title, flags=re.IGNORECASE).strip()
     title = re.sub(r"\b(next week|this week)\b\s*$", "", title, flags=re.IGNORECASE).strip()
-
-    # clean trailing punctuation/spaces
     title = title.strip(" -,:;")
 
     return title[:80] if title else "ExecAI Event"
 
 
 def _parse_time_from_text(text: str) -> Optional[Tuple[int, int]]:
-    """
-    Detecta 'at 2pm', '2:30 pm', '14:00'
-    Devuelve (hour, minute) o None.
-    """
     t = (text or "").lower()
 
-    # 2pm / 2 pm / 2:30pm / 2:30 pm
     m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", t)
     if m:
         hour = int(m.group(1))
@@ -91,7 +74,6 @@ def _parse_time_from_text(text: str) -> Optional[Tuple[int, int]]:
 
         return hour, minute
 
-    # 14:00 (24h)
     m2 = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", t)
     if m2:
         hour = int(m2.group(1))
@@ -102,12 +84,6 @@ def _parse_time_from_text(text: str) -> Optional[Tuple[int, int]]:
 
 
 def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: ZoneInfo) -> datetime:
-    """
-    Si no hay fecha/hora explícita:
-    - tomorrow -> mañana 10:00 (o la hora detectada)
-    - today -> hoy + 1 hora redondeada, o la hora detectada
-    - fallback -> hoy a la hora detectada, o +1 hora redondeada
-    """
     now = datetime.now(tz)
     tf = (timeframe or "").lower().strip()
 
@@ -123,7 +99,6 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
             d = now.date()
             hour, minute = parsed_time
             dt = datetime(d.year, d.month, d.day, hour, minute, tzinfo=tz)
-            # si ya pasó hoy, lo mandamos a +1 hora redondeada (demo-friendly)
             if dt <= now:
                 start = now + timedelta(hours=1)
                 return start.replace(minute=0, second=0, microsecond=0)
@@ -132,7 +107,6 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
         start = now + timedelta(hours=1)
         return start.replace(minute=0, second=0, microsecond=0)
 
-    # fallback general
     if parsed_time:
         d = now.date()
         hour, minute = parsed_time
@@ -144,6 +118,30 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
 
     start = now + timedelta(hours=1)
     return start.replace(minute=0, second=0, microsecond=0)
+
+
+def _build_draft_body(entities: Dict[str, Any]) -> str:
+    tone = (entities.get("tone") or "professional").lower()
+    topic = entities.get("topic") or "your request"
+    body_hint = entities.get("body_hint")
+
+    if body_hint:
+        return body_hint
+
+    if tone == "friendly":
+        return (
+            f"Hi,\n\n"
+            f"I hope you're doing well. I'm reaching out regarding {topic}. "
+            f"Let me know the best next step.\n\n"
+            f"Thanks so much,"
+        )
+
+    return (
+        f"Hello,\n\n"
+        f"I hope you are doing well. I am reaching out regarding {topic}. "
+        f"Please let me know the best next step.\n\n"
+        f"Best regards,"
+    )
 
 
 def handle_intent(intent_data: dict) -> dict:
@@ -174,11 +172,9 @@ def handle_intent(intent_data: dict) -> dict:
         start_dt = _default_start_from_timeframe(timeframe, raw, DEFAULT_TZ)
         end_dt = start_dt + timedelta(minutes=duration_min)
 
-        # Pass through attendee info
         attendee_emails = entities.get("attendee_emails", [])
         attendee_names = entities.get("attendee_names", [])
 
-        # Check for conflicts (real Google if connected, otherwise mock)
         try:
             busy_blocks = get_busy_blocks(start_dt, DEFAULT_TZ, use_google=True)
         except Exception:
@@ -234,7 +230,6 @@ def handle_intent(intent_data: dict) -> dict:
         attendee_emails = entities.get("attendee_emails", [])
         attendee_names = entities.get("attendee_names", [])
 
-        # Try real availability via Google FreeBusy
         try:
             search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)
 
@@ -267,7 +262,6 @@ def handle_intent(intent_data: dict) -> dict:
                     "message": f"Found {len(slots)} available slot(s) based on your calendar.",
                 }
 
-            # No open slots found
             return {
                 "action": "suggest_times",
                 "intent": intent,
@@ -281,7 +275,6 @@ def handle_intent(intent_data: dict) -> dict:
             }
 
         except Exception:
-            # Google not connected — use mock busy data with real availability engine
             search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)
             mock_busy = get_mock_busy_blocks(search_start, DEFAULT_TZ)
 
@@ -293,7 +286,6 @@ def handle_intent(intent_data: dict) -> dict:
                 tz=DEFAULT_TZ,
             )
 
-            # Build a display of what's busy so user can see the logic working
             busy_display = [
                 f"{b.get('title', 'Busy')} ({datetime.fromisoformat(b['start']).strftime('%I:%M %p')}–{datetime.fromisoformat(b['end']).strftime('%I:%M %p')})"
                 for b in mock_busy
@@ -317,15 +309,35 @@ def handle_intent(intent_data: dict) -> dict:
                 ),
             }
 
-    # ---------- EMAIL (placeholder) ----------
+    # ---------- EMAIL: CREATE DRAFT ----------
     if intent == "email_drafting":
+        recipient = entities.get("recipient")
+        subject = entities.get("subject") or entities.get("topic") or "Quick Follow-Up"
+        tone = entities.get("tone") or "professional"
+
+        if not recipient:
+            return {
+                "action": "create_draft",
+                "intent": intent,
+                "provider": DEFAULT_PROVIDER,
+                "missing": ["recipient"],
+                "message": "I can create the Gmail draft, but I need the recipient.",
+            }
+
+        body = _build_draft_body(entities)
+
         return {
-            "action": "draft_email",
+            "action": "create_draft",
             "intent": intent,
-            "message": "Email drafting flow planned (mock).",
+            "provider": DEFAULT_PROVIDER,
+            "recipient": recipient,
+            "subject": subject,
+            "body": body,
+            "tone": tone,
+            "message": "Creating Gmail draft.",
         }
 
-    # ---------- FOLLOW-UP (placeholder) ----------
+    # ---------- FOLLOW-UP ----------
     if intent == "follow_up_reminder":
         return {
             "action": "suggest_follow_up",

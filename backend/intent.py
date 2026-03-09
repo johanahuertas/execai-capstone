@@ -123,22 +123,86 @@ def _extract_tone(text: str) -> str:
 
 def _extract_recipient(text: str) -> Optional[str]:
     t = (text or "").strip()
+
+    # 1) full email address first
+    email_match = re.search(
+        r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b",
+        t,
+    )
+    if email_match:
+        return email_match.group(0).lower()
+
+    # 2) email Sarah
     m = re.search(r"\bemail\s+([A-Z][a-z]+)\b", t)
     if m:
         return m.group(1).lower()
 
+    # 3) draft an email to Sarah
     m2 = re.search(r"\bto\s+([A-Z][a-z]+)\b", t)
     if m2 and "email" in t.lower():
         return m2.group(1).lower()
+
+    # 4) lowercase support: "draft an email to sarah"
+    m3 = re.search(r"\bto\s+([a-z]+)\b", t.lower())
+    if m3 and "email" in t.lower():
+        return m3.group(1).lower()
 
     return None
 
 
 def _extract_topic(text: str) -> Optional[str]:
     t = (text or "").lower()
-    for topic in ["invoice", "contract", "proposal", "meeting", "payment", "follow-up", "reminder"]:
+
+    for topic in [
+        "invoice",
+        "contract",
+        "proposal",
+        "meeting",
+        "payment",
+        "follow-up",
+        "reminder",
+        "schedule",
+        "availability",
+        "budget",
+    ]:
         if topic in t:
             return topic
+
+    return None
+
+
+def _extract_email_subject(text: str) -> Optional[str]:
+    t = (text or "").strip()
+
+    # subject "X"
+    m = re.search(r'subject\s+"([^"]+)"', t, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # about X
+    m2 = re.search(r"\babout\s+(.+)", t, re.IGNORECASE)
+    if m2:
+        candidate = m2.group(1).strip().strip('"').strip("'")
+        candidate = re.split(r"\bin a\b|\bwith a\b|\busing a\b", candidate, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        if candidate:
+            return candidate[:120]
+
+    return None
+
+
+def _extract_email_body_hint(text: str) -> Optional[str]:
+    t = (text or "").strip()
+
+    # saying "..."
+    m = re.search(r'saying\s+"([^"]+)"', t, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # say "..."
+    m2 = re.search(r'say\s+"([^"]+)"', t, re.IGNORECASE)
+    if m2:
+        return m2.group(1).strip()
+
     return None
 
 
@@ -226,6 +290,22 @@ def _looks_like_list_emails(text: str) -> bool:
     return any(phrase in t for phrase in phrases)
 
 
+def _looks_like_email_drafting(text: str) -> bool:
+    t = (text or "").lower()
+
+    drafting_phrases = [
+        "draft an email",
+        "draft email",
+        "write an email",
+        "write email",
+        "compose an email",
+        "compose email",
+        "create a draft",
+        "create draft",
+    ]
+    return any(p in t for p in drafting_phrases)
+
+
 # -----------------------
 # RULE-BASED CLASSIFIER
 # -----------------------
@@ -242,10 +322,13 @@ def _classify_intent_rules(text: str) -> str:
     if _looks_like_list_emails(t):
         return "list_emails"
 
+    if _looks_like_email_drafting(t):
+        return "email_drafting"
+
     if any(w in t for w in ["follow up", "follow-up", "remind", "reminder"]):
         return "follow_up_reminder"
 
-    if any(w in t for w in ["email", "draft an email", "write an email", "send an email"]):
+    if any(w in t for w in ["send an email", "email", "write an email"]):
         return "email_drafting"
 
     if any(w in t for w in ["schedule", "find a time", "set up a meeting", "book a meeting", "meet"]):
@@ -279,6 +362,8 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
         entities["recipient"] = _extract_recipient(text)
         entities["topic"] = _extract_topic(text)
         entities["tone"] = _extract_tone(text)
+        entities["subject"] = _extract_email_subject(text) or _extract_topic(text)
+        entities["body_hint"] = _extract_email_body_hint(text)
 
     elif intent == "follow_up_reminder":
         entities["timeframe"] = _extract_timeframe(text) or "next week"
@@ -339,6 +424,8 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("recipient", _extract_recipient(text))
         entities.setdefault("topic", _extract_topic(text))
         entities.setdefault("tone", _extract_tone(text))
+        entities.setdefault("subject", _extract_email_subject(text) or _extract_topic(text))
+        entities.setdefault("body_hint", _extract_email_body_hint(text))
 
     if intent == "follow_up_reminder":
         entities.setdefault("timeframe", _extract_timeframe(text) or "next week")
