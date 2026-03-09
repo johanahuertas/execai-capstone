@@ -3,6 +3,7 @@
 import os
 import json
 import secrets
+import base64
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
@@ -63,6 +64,12 @@ class FreeBusyRequest(BaseModel):
 
 class ListEmailsRequest(BaseModel):
     max_results: int = 10
+
+
+class CreateDraftRequest(BaseModel):
+    to: str
+    subject: str
+    body: str
 
 
 # ===============================
@@ -133,7 +140,7 @@ def _can_refresh(token: Dict[str, Any]) -> bool:
 
 def _refresh_google_token(token: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Refresh ONLY when we *actually need it* (after a 401),
+    Refresh ONLY when we actually need it (after a 401),
     and only if env vars + refresh_token exist.
     """
     refresh_token = token.get("refresh_token")
@@ -465,6 +472,59 @@ def list_emails_service(provider: str, max_results: int = 10) -> Dict[str, Any]:
     }
 
 
+def create_gmail_draft_service(provider: str, to: str, subject: str, body: str) -> Dict[str, Any]:
+    """
+    Create a real Gmail draft.
+    """
+    if provider != "google":
+        raise HTTPException(status_code=400, detail="Only google supported")
+
+    to = (to or "").strip()
+    subject = (subject or "").strip()
+    body = body or ""
+
+    if not to:
+        raise HTTPException(status_code=400, detail="Missing recipient email.")
+    if not subject:
+        raise HTTPException(status_code=400, detail="Missing draft subject.")
+
+    raw_message = (
+        f"To: {to}\r\n"
+        f"Subject: {subject}\r\n"
+        "Content-Type: text/plain; charset=UTF-8\r\n"
+        "\r\n"
+        f"{body}"
+    )
+
+    encoded_message = base64.urlsafe_b64encode(raw_message.encode("utf-8")).decode("utf-8")
+
+    created = _google_api_post(
+        "/gmail/v1/users/me/drafts",
+        {
+            "message": {
+                "raw": encoded_message,
+            }
+        },
+    )
+
+    draft = created.get("message", {}) or {}
+
+    return {
+        "status": "draft_created",
+        "draft": {
+            "id": created.get("id"),
+            "messageId": draft.get("id"),
+            "threadId": draft.get("threadId"),
+            "labelIds": draft.get("labelIds", []),
+        },
+        "email": {
+            "to": to,
+            "subject": subject,
+            "body": body,
+        },
+    }
+
+
 # ===============================
 # ENDPOINTS
 # ===============================
@@ -537,3 +597,13 @@ def freebusy(payload: FreeBusyRequest):
 @router.get("/google/list-emails")
 def list_emails(max_results: int = 10):
     return list_emails_service("google", max_results)
+
+
+@router.post("/google/create-draft")
+def create_draft(payload: CreateDraftRequest):
+    return create_gmail_draft_service(
+        "google",
+        payload.to,
+        payload.subject,
+        payload.body,
+    )
