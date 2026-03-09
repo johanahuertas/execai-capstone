@@ -9,12 +9,10 @@ from .intent import parse_intent as parse_intent_ai
 from .orchestrator import handle_intent
 from .integrations import router as integrations_router
 
-# ✅ Reusable services (Google real + mock)
-from .integrations import list_events_service, create_event_service
+from .integrations import list_events_service, create_event_service, list_emails_service
 
 app = FastAPI(title="ExecAI Backend")
 
-# Mount integrations endpoints
 app.include_router(integrations_router)
 
 
@@ -80,9 +78,7 @@ def assistant(payload: ParseIntentRequest):
             "result": existing_result,
         }
 
-    # -----------------------
-    # Fallback execution in main.py (if orchestrator only "decided")
-    # -----------------------
+
     entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
 
     action = ((decision or {}).get("action") or (intent_data or {}).get("intent") or "").lower().strip()
@@ -96,13 +92,19 @@ def assistant(payload: ParseIntentRequest):
             days = (decision or {}).get("days")
             if days is None:
                 days = entities.get("days", 7)
-            result = list_events_service(provider=provider, days=int(days))
+
+            result = list_events_service(
+                provider=provider,
+                days=int(days),
+            )
 
         # CREATE EVENT
         elif action in {"create_event", "calendar_create", "schedule_event"}:
             title = (decision or {}).get("title") or entities.get("title")
             start = (decision or {}).get("start") or entities.get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
+
+            attendee_emails = (decision or {}).get("attendee_emails") or entities.get("attendee_emails") or []
 
             if not title or not start:
                 result = {
@@ -117,12 +119,32 @@ def assistant(payload: ParseIntentRequest):
                     title=str(title),
                     start=str(start),
                     duration_min=int(duration_min),
+                    attendees=attendee_emails,
                 )
 
+        # LIST EMAILS
+        elif action in {"list_emails", "get_emails", "show_inbox"}:
+            max_results = (decision or {}).get("max_results")
+            if max_results is None:
+                max_results = entities.get("max_results", 5)
+
+            result = list_emails_service(
+                provider=provider,
+                max_results=int(max_results),
+            )
+
     except HTTPException as e:
-        result = {"status": "error", "where": "integrations", "detail": e.detail}
+        result = {
+            "status": "error",
+            "where": "integrations",
+            "detail": e.detail,
+        }
     except Exception as e:
-        result = {"status": "error", "where": "assistant", "detail": f"{type(e).__name__}: {str(e)}"}
+        result = {
+            "status": "error",
+            "where": "assistant",
+            "detail": f"{type(e).__name__}: {str(e)}",
+        }
 
     return {
         "intent_data": intent_data,
@@ -143,7 +165,11 @@ def suggest_times(payload: ParseIntentRequest):
         {"label": "Option B", "start": (now + timedelta(days=2, hours=14)).isoformat(), "duration_min": 30},
         {"label": "Option C", "start": (now + timedelta(days=3, hours=9)).isoformat(), "duration_min": 30},
     ]
-    return {"intent": "meeting_scheduling", "options": options, "provider": "mock"}
+    return {
+        "intent": "meeting_scheduling",
+        "options": options,
+        "provider": "mock",
+    }
 
 
 @app.post("/create-event")
@@ -185,6 +211,12 @@ def draft_email(req: DraftEmailRequest):
 
     return {
         "status": "drafted",
-        "email": {"to": recipient, "subject": subject, "body": body, "tone": tone, "provider": "mock"},
+        "email": {
+            "to": recipient,
+            "subject": subject,
+            "body": body,
+            "tone": tone,
+            "provider": "mock",
+        },
         "message": "Email draft generated (mock).",
     }

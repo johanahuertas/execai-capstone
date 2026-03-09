@@ -143,10 +143,10 @@ def _extract_topic(text: str) -> Optional[str]:
 
 
 # -----------------------
-# CALENDAR HELPERS (FIXED)
+# CALENDAR HELPERS
 # -----------------------
 def _has_word(t: str, word: str) -> bool:
-    """Word-boundary check to avoid substring bugs (e.g., 'budGET' -> 'get')."""
+    """Word-boundary check to avoid substring bugs."""
     return re.search(rf"\b{re.escape(word)}\b", t) is not None
 
 
@@ -198,10 +198,32 @@ def _looks_like_create_event(text: str) -> bool:
     if any(p in t for p in create_phrases):
         return True
 
-    # also allow: "create ... meeting/event" without exact phrase
     has_action = any(_has_word(t, w) for w in ["create", "add", "schedule", "book", "make"])
     has_target = any(_has_word(t, w) for w in ["event", "meeting", "appointment"])
     return has_action and has_target
+
+
+# -----------------------
+# EMAIL HELPERS
+# -----------------------
+def _looks_like_list_emails(text: str) -> bool:
+    t = (text or "").lower()
+
+    phrases = [
+        "list my emails",
+        "show my emails",
+        "show my latest emails",
+        "show my recent emails",
+        "list my recent emails",
+        "check my inbox",
+        "show my inbox",
+        "read my emails",
+        "list my latest emails",
+        "show latest emails",
+        "show recent emails",
+        "read my inbox",
+    ]
+    return any(phrase in t for phrase in phrases)
 
 
 # -----------------------
@@ -210,12 +232,15 @@ def _looks_like_create_event(text: str) -> bool:
 def _classify_intent_rules(text: str) -> str:
     t = (text or "").lower()
 
-    # IMPORTANT: create_event FIRST (avoids conflicts)
+    # IMPORTANT: order matters
     if _looks_like_create_event(t):
         return "create_event"
 
     if _looks_like_list_events(t):
         return "list_events"
+
+    if _looks_like_list_emails(t):
+        return "list_emails"
 
     if any(w in t for w in ["follow up", "follow-up", "remind", "reminder"]):
         return "follow_up_reminder"
@@ -240,6 +265,9 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
         entities["raw"] = text
         entities["timeframe"] = _extract_timeframe(text)
         entities["duration_min"] = _extract_duration_min(text) or 30
+
+    elif intent == "list_emails":
+        entities["max_results"] = 5
 
     elif intent == "meeting_scheduling":
         entities["participants"] = _extract_participants(text)
@@ -292,6 +320,7 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         "follow_up_reminder",
         "list_events",
         "create_event",
+        "list_emails",
         "unknown",
     }
     if intent not in allowed:
@@ -324,6 +353,9 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("timeframe", _extract_timeframe(text))
         entities.setdefault("duration_min", _extract_duration_min(text) or 30)
 
+    if intent == "list_emails":
+        entities.setdefault("max_results", 5)
+
     return {
         "intent": intent,
         "entities": entities,
@@ -340,7 +372,7 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
     system = (
         "You are an intent parser for an executive assistant. "
         "Return ONLY valid JSON with keys: intent, entities. "
-        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, list_events, create_event, unknown. "
+        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, list_events, create_event, list_emails, unknown. "
         "entities should be an object. "
         "If unsure, use intent='unknown' and entities={}. "
         "Do NOT include extra text."

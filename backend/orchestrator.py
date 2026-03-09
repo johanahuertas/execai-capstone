@@ -214,6 +214,18 @@ def handle_intent(intent_data: dict) -> dict:
 
         return result
 
+    # ---------- EMAIL: LIST EMAILS ----------
+    if intent == "list_emails":
+        max_results = _safe_int(entities.get("max_results", 5), 5)
+        max_results = max(1, min(max_results, 20))
+        return {
+            "action": "list_emails",
+            "intent": intent,
+            "provider": DEFAULT_PROVIDER,
+            "max_results": max_results,
+            "message": f"Here are your latest {max_results} emails.",
+        }
+
     # ---------- MEETING ----------
     if intent == "meeting_scheduling":
         timeframe = (entities.get("timeframe") or "").strip() or None
@@ -307,11 +319,23 @@ def handle_intent(intent_data: dict) -> dict:
 
     # ---------- EMAIL (placeholder) ----------
     if intent == "email_drafting":
-        return {"action": "draft_email", "intent": intent, "message": "Email drafting flow planned (mock)."}
+        return {
+            "action": "draft_email",
+            "intent": intent,
+            "message": "Email drafting flow planned (mock).",
+        }
 
     # ---------- FOLLOW-UP (placeholder) ----------
     if intent == "follow_up_reminder":
-        return {"action": "suggest_follow_up", "intent": intent, "message": "Follow-up flow planned (mock)."}
+        return {
+            "action": "suggest_follow_up",
+            "intent": intent,
+            "message": "Follow-up flow planned (mock).",
+        }
 
     # ---------- FALLBACK ----------
-    return {"action": "unknown", "intent": "unknown", "message": "I’m not sure how to help with that yet."}
+    return {
+        "action": "unknown",
+        "intent": "unknown",
+        "message": "I’m not sure how to help with that yet.",
+    }
