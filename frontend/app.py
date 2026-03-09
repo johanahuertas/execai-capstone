@@ -36,7 +36,7 @@ if "created_event" not in st.session_state:
 if "email_draft" not in st.session_state:
     st.session_state.email_draft = None
 if "assistant_result" not in st.session_state:
-    st.session_state.assistant_result = None  # NEW
+    st.session_state.assistant_result = None
 
 col1, col2 = st.columns(2)
 
@@ -60,14 +60,13 @@ if col1.button("Run assistant"):
                 st.session_state.intent_data = data.get("intent_data", {})
                 st.session_state.decision = data.get("decision", {})
                 st.session_state.options = st.session_state.decision.get("options", [])
-                st.session_state.assistant_result = data.get("result")  # NEW
+                st.session_state.assistant_result = data.get("result")
 
                 # Reset outputs each run
                 st.session_state.selected = None
                 st.session_state.created_event = None
                 st.session_state.email_draft = None
 
-                # If intent is email, call /draft-email (mock) and show the draft
                 intent = (st.session_state.intent_data.get("intent") or "").strip()
                 entities = st.session_state.intent_data.get("entities") or {}
 
@@ -89,7 +88,6 @@ if col1.button("Run assistant"):
                     except Exception as e:
                         st.error(f"Error drafting email: {e}")
                 else:
-                    # Show conflict warnings for create_event
                     if intent == "create_event":
                         decision = st.session_state.decision
                         has_conflicts = decision.get("has_conflicts", False)
@@ -103,7 +101,6 @@ if col1.button("Run assistant"):
                         else:
                             st.success("✅ " + decision.get("message", "No conflicts."))
 
-                    # Show busy times for meeting scheduling
                     elif st.session_state.options:
                         busy_display = st.session_state.decision.get("busy_display", [])
                         if busy_display:
@@ -111,6 +108,12 @@ if col1.button("Run assistant"):
                             st.warning("🚫 **Busy times:** " + " · ".join(busy_display))
                         else:
                             st.success("Meeting options generated ✅")
+
+                    elif intent == "list_emails":
+                        st.success("Emails retrieved successfully ✅")
+
+                    elif intent == "list_events":
+                        st.success("Events retrieved successfully ✅")
 
                     else:
                         st.info("Assistant ran successfully ✅")
@@ -125,7 +128,7 @@ if col2.button("Clear"):
     st.session_state.selected = None
     st.session_state.created_event = None
     st.session_state.email_draft = None
-    st.session_state.assistant_result = None  # NEW
+    st.session_state.assistant_result = None
     st.rerun()
 
 # -----------------------
@@ -140,12 +143,12 @@ with st.expander("Debug (Intent + Decision)", expanded=False):
         st.markdown("### Decision / Orchestration")
         st.json(st.session_state.decision)
 
-    if st.session_state.assistant_result is not None:  # NEW
+    if st.session_state.assistant_result is not None:
         st.markdown("### Result")
         st.json(st.session_state.assistant_result)
 
 # -----------------------
-# GOOGLE CALENDAR OUTPUT (REAL)
+# COMMON RESULT / ACTION
 # -----------------------
 action = (st.session_state.decision.get("action") or "").strip()
 result = st.session_state.assistant_result
@@ -154,7 +157,9 @@ result = st.session_state.assistant_result
 if isinstance(result, dict) and result.get("status") == "error":
     st.error(f"Integration error: {result.get('detail', 'Unknown error')}")
 
-# list events nicely
+# -----------------------
+# GOOGLE CALENDAR OUTPUT (REAL)
+# -----------------------
 if action == "list_events" and isinstance(result, dict) and "events" in result:
     st.subheader("📅 Upcoming events")
     events = result.get("events") or []
@@ -183,7 +188,6 @@ if action == "list_events" and isinstance(result, dict) and "events" in result:
                 st.markdown(f"[Open in Google Calendar]({link})")
             st.divider()
 
-# create event nicely
 if action == "create_event" and isinstance(result, dict) and result.get("status") == "created":
     st.subheader("✅ Event created")
     ev = result.get("event") or {}
@@ -192,6 +196,30 @@ if action == "create_event" and isinstance(result, dict) and result.get("status"
         st.markdown(f"🕒 {ev.get('start')}")
     if ev.get("htmlLink"):
         st.markdown(f"[Open in Google Calendar]({ev['htmlLink']})")
+
+# -----------------------
+# GMAIL OUTPUT (REAL)
+# -----------------------
+if action == "list_emails" and isinstance(result, dict) and "emails" in result:
+    st.subheader("📧 Latest emails")
+    emails = result.get("emails") or []
+
+    if not emails:
+        st.info("No emails found.")
+    else:
+        for email in emails:
+            sender = email.get("from") or "(Unknown sender)"
+            subject = email.get("subject") or "(No subject)"
+            date_val = email.get("date") or ""
+            snippet = email.get("snippet") or ""
+
+            st.markdown(f"**{subject}**")
+            st.markdown(f"**From:** {sender}")
+            if date_val:
+                st.markdown(f"**Date:** {date_val}")
+            if snippet:
+                st.markdown(f"_{snippet}_")
+            st.divider()
 
 # -----------------------
 # EMAIL DRAFT OUTPUT (MOCK)
