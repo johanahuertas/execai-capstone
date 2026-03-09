@@ -145,10 +145,10 @@ def submit_prompt(prompt: str):
             "result": result,
         }
 
+        # fallback only for old mock draft endpoint if needed
         intent = (intent_data.get("intent") or "").strip()
         entities = intent_data.get("entities") or {}
 
-        # fallback for mock draft email
         if intent == "email_drafting" and result is None:
             try:
                 draft_res = requests.post(
@@ -272,12 +272,32 @@ def render_email_list(result: dict):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_draft_email(result: dict):
+def render_created_draft(result: dict):
+    draft = result.get("draft", {}) or {}
+    email = result.get("email", {}) or {}
+
+    st.markdown('<div class="section-title">✉️ Gmail draft created</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="pill">Gmail Draft</div>', unsafe_allow_html=True)
+    st.markdown(f"**To:** {email.get('to', '')}")
+    st.markdown(f"**Subject:** {email.get('subject', '')}")
+    st.text_area("Draft body", value=email.get("body", ""), height=180, disabled=True)
+
+    if draft.get("id"):
+        st.markdown(f"**Draft ID:** `{draft.get('id')}`")
+    if draft.get("threadId"):
+        st.markdown(f"**Thread ID:** `{draft.get('threadId')}`")
+
+    st.success("The draft was created successfully in Gmail.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_mock_draft(result: dict):
     email = result.get("email", {}) or {}
 
     st.markdown('<div class="section-title">✉️ Draft email</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="pill">Draft</div>', unsafe_allow_html=True)
+    st.markdown('<div class="pill">Mock Draft</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email.get('to', '')}")
     st.markdown(f"**Subject:** {email.get('subject', '')}")
     st.text_area("Body", value=email.get("body", ""), height=220, disabled=True)
@@ -322,6 +342,19 @@ def render_conflicts(decision: dict):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+def render_needs_clarification(result: dict):
+    st.markdown('<div class="section-title">❓ More info needed</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.warning(result.get("message", "I need a bit more information."))
+    missing = result.get("missing", []) or []
+    if missing:
+        st.markdown("**Missing:** " + ", ".join(missing))
+    example = result.get("example")
+    if example:
+        st.markdown(f"**Example:** `{example}`")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_generic_message(decision: dict):
     message = decision.get("message") or "Done."
     st.info(message)
@@ -332,6 +365,10 @@ def render_assistant_result(decision: dict, result: dict | None):
 
     if isinstance(result, dict) and result.get("status") == "error":
         st.error(f"Integration error: {result.get('detail', 'Unknown error')}")
+        return
+
+    if isinstance(result, dict) and result.get("status") == "needs_clarification":
+        render_needs_clarification(result)
         return
 
     if action == "list_events" and isinstance(result, dict):
@@ -352,9 +389,13 @@ def render_assistant_result(decision: dict, result: dict | None):
         render_email_list(result)
         return
 
-    if action == "draft_email" and isinstance(result, dict):
-        render_draft_email(result)
-        return
+    if action in {"create_draft", "draft_email"} and isinstance(result, dict):
+        if result.get("status") == "draft_created":
+            render_created_draft(result)
+            return
+        if result.get("status") == "drafted":
+            render_mock_draft(result)
+            return
 
     if action == "suggest_times":
         render_meeting_options(decision)
@@ -390,6 +431,10 @@ with st.sidebar:
 
     if st.button("➕ Create a demo event", use_container_width=True):
         submit_prompt("create an event called Demo Sync tomorrow at 2pm for 30 minutes")
+        st.rerun()
+
+    if st.button("✉️ Create demo draft", use_container_width=True):
+        submit_prompt("draft an email to sarah@example.com about the proposal")
         st.rerun()
 
     st.divider()
@@ -437,6 +482,7 @@ if not st.session_state.messages:
             • show my latest emails<br>
             • show my calendar for next week<br>
             • create an event called Budget Review tomorrow at 2pm for 45 minutes<br>
+            • draft an email to sarah@example.com about the proposal<br>
             • find a time to meet tomorrow
         </div>
         """,
@@ -480,10 +526,10 @@ if prompt:
                     "result": result,
                 }
 
+                # fallback for old mock email drafting path only if needed
                 intent = (intent_data.get("intent") or "").strip()
                 entities = intent_data.get("entities") or {}
 
-                # fallback for mock draft email
                 if intent == "email_drafting" and result is None:
                     try:
                         draft_res = requests.post(
