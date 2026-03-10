@@ -72,6 +72,10 @@ class CreateDraftRequest(BaseModel):
     body: str
 
 
+class ReadEmailRequest(BaseModel):
+    message_id: str
+
+
 # ===============================
 # GOOGLE OAUTH HELPERS
 # ===============================
@@ -172,7 +176,7 @@ def _refresh_google_token(token: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=r.text)
 
     refreshed = r.json()
-    refreshed["refresh_token"] = refresh_token  # keep it
+    refreshed["refresh_token"] = refresh_token
     _save_google_token(refreshed)
     return refreshed
 
@@ -264,6 +268,79 @@ def _google_api_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=r.text)
 
     return r.json()
+
+
+# ===============================
+# GMAIL BODY HELPERS
+# ===============================
+
+
+def _decode_gmail_base64(data: str) -> str:
+    if not data:
+        return ""
+
+    try:
+        padding = '=' * (-len(data) % 4)
+        decoded = base64.urlsafe_b64decode(data + padding)
+        return decoded.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _extract_gmail_body(payload: Dict[str, Any]) -> str:
+    """
+    Try to extract the best readable body from a Gmail message payload.
+    Prefers text/plain, then text/html, then body.data fallback.
+    """
+    if not payload:
+        return ""
+
+    mime_type = payload.get("mimeType", "")
+    body = payload.get("body", {}) or {}
+    data = body.get("data")
+
+    # direct body
+    if data and mime_type in {"text/plain", "text/html"}:
+        return _decode_gmail_base64(data)
+
+    # multipart
+    parts = payload.get("parts", []) or []
+    if parts:
+        # prefer text/plain
+        for part in parts:
+            if part.get("mimeType") == "text/plain":
+                part_data = (part.get("body", {}) or {}).get("data")
+                if part_data:
+                    return _decode_gmail_base64(part_data)
+
+        # then text/html
+        for part in parts:
+            if part.get("mimeType") == "text/html":
+                part_data = (part.get("body", {}) or {}).get("data")
+                if part_data:
+                    return _decode_gmail_base64(part_data)
+
+        # recursive fallback
+        for part in parts:
+            nested = _extract_gmail_body(part)
+            if nested:
+                return nested
+
+    # generic fallback
+    if data:
+        return _decode_gmail_base64(data)
+
+    return ""
+
+
+def _headers_to_map(headers: List[Dict[str, Any]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for h in headers or []:
+        name = h.get("name")
+        value = h.get("value")
+        if name and value:
+            out[name.lower()] = value
+    return out
 
 
 # ===============================
@@ -447,13 +524,7 @@ def list_emails_service(provider: str, max_results: int = 10) -> Dict[str, Any]:
         )
 
         headers = (detail.get("payload", {}) or {}).get("headers", []) or []
-
-        header_map = {}
-        for h in headers:
-            name = h.get("name")
-            value = h.get("value")
-            if name and value:
-                header_map[name.lower()] = value
+        header_map = _headers_to_map(headers)
 
         emails.append(
             {
@@ -469,6 +540,46 @@ def list_emails_service(provider: str, max_results: int = 10) -> Dict[str, Any]:
     return {
         "provider": "google",
         "emails": emails,
+    }
+
+
+def read_email_service(provider: str, message_id: str) -> Dict[str, Any]:
+    """
+    Read a full Gmail message including headers + decoded body.
+    """
+    if provider != "google":
+        raise HTTPException(status_code=400, detail="Only google supported")
+
+    message_id = (message_id or "").strip()
+    if not message_id:
+        raise HTTPException(status_code=400, detail="Missing message_id.")
+
+    detail = _google_api_get(
+        f"/gmail/v1/users/me/messages/{message_id}",
+        {
+            "format": "full",
+        },
+    )
+
+    payload = detail.get("payload", {}) or {}
+    headers = payload.get("headers", []) or []
+    header_map = _headers_to_map(headers)
+    body_text = _extract_gmail_body(payload)
+
+    return {
+        "provider": "google",
+        "email": {
+            "id": detail.get("id"),
+            "threadId": detail.get("threadId"),
+            "labelIds": detail.get("labelIds", []),
+            "snippet": detail.get("snippet"),
+            "from": header_map.get("from"),
+            "to": header_map.get("to"),
+            "cc": header_map.get("cc"),
+            "subject": header_map.get("subject"),
+            "date": header_map.get("date"),
+            "body": body_text,
+        },
     }
 
 
@@ -597,6 +708,11 @@ def freebusy(payload: FreeBusyRequest):
 @router.get("/google/list-emails")
 def list_emails(max_results: int = 10):
     return list_emails_service("google", max_results)
+
+
+@router.get("/google/read-email/{message_id}")
+def read_email(message_id: str):
+    return read_email_service("google", message_id)
 
 
 @router.post("/google/create-draft")

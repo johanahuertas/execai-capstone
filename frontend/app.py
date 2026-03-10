@@ -1,6 +1,8 @@
 # frontend/app.py
-import streamlit as st
+import re
+import html
 import requests
+import streamlit as st
 from datetime import datetime
 
 API_BASE = "http://127.0.0.1:8000"
@@ -115,6 +117,65 @@ def format_datetime(value: str) -> str:
         return value
 
 
+def clean_email_body(body: str, max_chars: int = 2000) -> str:
+    if not body:
+        return ""
+
+    cleaned = body
+
+    # Decode HTML entities first
+    cleaned = html.unescape(cleaned)
+
+    # Remove script/style blocks
+    cleaned = re.sub(r"<script.*?>.*?</script>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<style.*?>.*?</style>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+    # Remove HTML comments
+    cleaned = re.sub(r"<!--.*?-->", " ", cleaned, flags=re.DOTALL)
+
+    # Remove VML / Office / XML-ish blocks that appear in email templates
+    cleaned = re.sub(r"<xml.*?>.*?</xml>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<o:.*?>.*?</o:.*?>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<v:.*?>.*?</v:.*?>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+    # Remove all remaining HTML tags
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+
+    # Remove common CSS leftovers / template garbage
+    cleaned = re.sub(
+        r"\b(width|height|font|color|background|margin|padding|display|line-height|border|mso-[a-z-]+)[^;>{}]*(;|:)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    # Remove quoted-printable soft line breaks and artifacts
+    cleaned = cleaned.replace("=\r\n", "")
+    cleaned = cleaned.replace("=\n", "")
+    cleaned = cleaned.replace("=20", " ")
+    cleaned = cleaned.replace("=3D", "=")
+
+    # Remove noisy repeated punctuation / strange invisible-space fragments
+    cleaned = re.sub(r"[ ​⁠]+", " ", cleaned)  # non-breaking / invisible spaces
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # If it still looks like a giant HTML template, keep the most readable part
+    # Prefer content after a title-ish sentence if possible
+    if len(cleaned) > 600:
+        match = re.search(
+            r"(We've been perfecting jeans since 1873.*|I hope.*|Hello.*|Hi.*|Thank you.*|Your order.*|Your account.*)",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            cleaned = match.group(1)
+
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rstrip() + "..."
+
+    return cleaned
+
+
 def submit_prompt(prompt: str):
     if not prompt.strip():
         return
@@ -130,7 +191,7 @@ def submit_prompt(prompt: str):
         res = requests.post(
             f"{API_BASE}/assistant",
             json={"text": prompt},
-            timeout=20,
+            timeout=25,
         )
         res.raise_for_status()
         data = res.json()
@@ -272,16 +333,45 @@ def render_email_list(result: dict):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+def render_read_email(result: dict):
+    email_data = result.get("email", {}) or {}
+
+    subject = email_data.get("subject") or "(No subject)"
+    sender = email_data.get("from") or "(Unknown sender)"
+    to_val = email_data.get("to") or ""
+    date_val = email_data.get("date") or ""
+    snippet = email_data.get("snippet") or ""
+    body = clean_email_body(email_data.get("body") or "")
+
+    st.markdown('<div class="section-title">📩 Opened email</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="pill">Gmail Message</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="card-title">{subject}</div>', unsafe_allow_html=True)
+    st.markdown(f"**From:** {sender}")
+    if to_val:
+        st.markdown(f"**To:** {to_val}")
+    if date_val:
+        st.markdown(f"**Date:** {date_val}")
+    if snippet:
+        st.markdown(f"**Snippet:** {snippet}")
+
+    if email_data.get("threadId"):
+        st.markdown(f"**Thread ID:** `{email_data.get('threadId')}`")
+
+    st.text_area("Email body", value=body, height=320, disabled=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_created_draft(result: dict):
     draft = result.get("draft", {}) or {}
-    email = result.get("email", {}) or {}
+    email_data = result.get("email", {}) or {}
 
     st.markdown('<div class="section-title">✉️ Gmail draft created</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="pill">Gmail Draft</div>', unsafe_allow_html=True)
-    st.markdown(f"**To:** {email.get('to', '')}")
-    st.markdown(f"**Subject:** {email.get('subject', '')}")
-    st.text_area("Draft body", value=email.get("body", ""), height=180, disabled=True)
+    st.markdown(f"**To:** {email_data.get('to', '')}")
+    st.markdown(f"**Subject:** {email_data.get('subject', '')}")
+    st.text_area("Draft body", value=email_data.get("body", ""), height=180, disabled=True)
 
     if draft.get("id"):
         st.markdown(f"**Draft ID:** `{draft.get('id')}`")
@@ -293,14 +383,14 @@ def render_created_draft(result: dict):
 
 
 def render_mock_draft(result: dict):
-    email = result.get("email", {}) or {}
+    email_data = result.get("email", {}) or {}
 
     st.markdown('<div class="section-title">✉️ Draft email</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="pill">Mock Draft</div>', unsafe_allow_html=True)
-    st.markdown(f"**To:** {email.get('to', '')}")
-    st.markdown(f"**Subject:** {email.get('subject', '')}")
-    st.text_area("Body", value=email.get("body", ""), height=220, disabled=True)
+    st.markdown(f"**To:** {email_data.get('to', '')}")
+    st.markdown(f"**Subject:** {email_data.get('subject', '')}")
+    st.text_area("Body", value=email_data.get("body", ""), height=220, disabled=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -371,6 +461,10 @@ def render_assistant_result(decision: dict, result: dict | None):
         render_needs_clarification(result)
         return
 
+    if isinstance(result, dict) and result.get("status") == "not_found":
+        st.warning(result.get("message", "Nothing found."))
+        return
+
     if action == "list_events" and isinstance(result, dict):
         render_event_list(result)
         return
@@ -387,6 +481,10 @@ def render_assistant_result(decision: dict, result: dict | None):
 
     if action == "list_emails" and isinstance(result, dict):
         render_email_list(result)
+        return
+
+    if action == "read_email" and isinstance(result, dict) and "email" in result:
+        render_read_email(result)
         return
 
     if action in {"create_draft", "draft_email"} and isinstance(result, dict):
@@ -419,6 +517,10 @@ with st.sidebar:
 
     if st.button("📧 Show latest emails", use_container_width=True):
         submit_prompt("show my latest emails")
+        st.rerun()
+
+    if st.button("📩 Read latest email", use_container_width=True):
+        submit_prompt("read my latest email")
         st.rerun()
 
     if st.button("📅 Show my calendar for next week", use_container_width=True):
@@ -480,6 +582,7 @@ if not st.session_state.messages:
         <div class="empty-state">
             <strong>Try asking something like:</strong><br><br>
             • show my latest emails<br>
+            • read my latest email<br>
             • show my calendar for next week<br>
             • create an event called Budget Review tomorrow at 2pm for 45 minutes<br>
             • draft an email to sarah@example.com about the proposal<br>
@@ -511,7 +614,7 @@ if prompt:
                 res = requests.post(
                     f"{API_BASE}/assistant",
                     json={"text": prompt},
-                    timeout=20,
+                    timeout=25,
                 )
                 res.raise_for_status()
                 data = res.json()
@@ -526,7 +629,6 @@ if prompt:
                     "result": result,
                 }
 
-                # fallback for old mock email drafting path only if needed
                 intent = (intent_data.get("intent") or "").strip()
                 entities = intent_data.get("entities") or {}
 

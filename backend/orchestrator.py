@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from zoneinfo import ZoneInfo
 
@@ -220,6 +220,20 @@ def handle_intent(intent_data: dict) -> dict:
             "provider": DEFAULT_PROVIDER,
             "max_results": max_results,
             "message": f"Here are your latest {max_results} emails.",
+        }
+
+    # ---------- EMAIL: READ EMAIL ----------
+    if intent == "read_email":
+        email_reference = entities.get("email_reference") or "latest"
+        email_index = entities.get("email_index")
+
+        return {
+            "action": "read_email",
+            "intent": intent,
+            "provider": DEFAULT_PROVIDER,
+            "email_reference": email_reference,
+            "email_index": email_index,
+            "message": "Opening the requested email.",
         }
 
     # ---------- MEETING ----------

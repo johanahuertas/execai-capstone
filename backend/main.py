@@ -15,6 +15,7 @@ from .integrations import (
     create_event_service,
     list_emails_service,
     create_gmail_draft_service,
+    read_email_service,
 )
 
 app = FastAPI(title="ExecAI Backend")
@@ -142,6 +143,58 @@ def assistant(payload: ParseIntentRequest):
                 provider=provider,
                 max_results=int(max_results),
             )
+
+        # -----------------------
+        # READ EMAIL
+        # -----------------------
+        elif action in {"read_email", "open_email"}:
+            email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
+            email_index = (decision or {}).get("email_index")
+            if email_index is None:
+                email_index = entities.get("email_index")
+
+            # latest email
+            if email_reference == "latest":
+                latest_list = list_emails_service(provider=provider, max_results=1)
+                emails = latest_list.get("emails", []) or []
+
+                if not emails:
+                    result = {
+                        "status": "not_found",
+                        "message": "No emails found in your inbox.",
+                    }
+                else:
+                    message_id = emails[0].get("id")
+                    result = read_email_service(provider=provider, message_id=message_id)
+
+            # indexed email, e.g. "email 1"
+            elif email_reference in {"indexed", "first"}:
+                index = 1
+                if email_reference == "first":
+                    index = 1
+                elif email_index:
+                    try:
+                        index = max(1, int(email_index))
+                    except Exception:
+                        index = 1
+
+                email_list = list_emails_service(provider=provider, max_results=max(index, 1))
+                emails = email_list.get("emails", []) or []
+
+                if len(emails) < index:
+                    result = {
+                        "status": "not_found",
+                        "message": f"I couldn't find email #{index}.",
+                    }
+                else:
+                    message_id = emails[index - 1].get("id")
+                    result = read_email_service(provider=provider, message_id=message_id)
+
+            else:
+                result = {
+                    "status": "needs_clarification",
+                    "message": "I can read an email, but I need a clearer reference like 'latest email' or 'email 1'.",
+                }
 
         # -----------------------
         # CREATE GMAIL DRAFT
