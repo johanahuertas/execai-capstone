@@ -301,16 +301,18 @@ def render_email_list(result: dict):
         st.info("No emails found.")
         return
 
-    for email in emails:
-        subject = email.get("subject") or "(No subject)"
-        sender = email.get("from") or "(Unknown sender)"
-        date_value = email.get("date") or ""
-        snippet = email.get("snippet") or ""
+    for email_data in emails:
+        subject = email_data.get("subject") or "(No subject)"
+        sender = email_data.get("from") or "(Unknown sender)"
+        date_value = email_data.get("date") or ""
+        snippet = email_data.get("snippet") or ""
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="pill">Gmail</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card-title">{subject}</div>', unsafe_allow_html=True)
         st.markdown(f"**From:** {sender}")
+        if email_data.get("to"):
+            st.markdown(f"**To:** {email_data.get('to')}")
         if date_value:
             st.markdown(f"**Date:** {date_value}")
         if snippet:
@@ -423,7 +425,7 @@ def render_meeting_options(decision: dict):
     if busy_display:
         st.warning("Busy times: " + " · ".join(busy_display))
 
-    for idx, opt in enumerate(options):
+    for opt in options:
         label = opt.get("label", "Option")
         start = format_datetime(opt.get("start", ""))
         dur = opt.get("duration_min", 30)
@@ -436,17 +438,40 @@ def render_meeting_options(decision: dict):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_conflicts(decision: dict):
-    st.markdown('<div class="section-title">⚠️ Conflicts found</div>', unsafe_allow_html=True)
-    st.warning(decision.get("message", "Conflict detected."))
+def render_conflicts_from_list(conflicts: list, title_text: str = "⚠️ Conflicts found", warning_text: str = "Conflict detected."):
+    st.markdown(f'<div class="section-title">{title_text}</div>', unsafe_allow_html=True)
+    st.warning(warning_text)
 
-    for c in decision.get("conflicts", []):
+    for c in conflicts:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="pill">Conflict</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card-title">{c.get("title", "Busy")}</div>', unsafe_allow_html=True)
         st.markdown(f"**From:** {c.get('start', '?')}")
         st.markdown(f"**To:** {c.get('end', '?')}")
         st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_conflicts(decision: dict):
+    render_conflicts_from_list(
+        decision.get("conflicts", []) or [],
+        "⚠️ Conflicts found",
+        decision.get("message", "Conflict detected."),
+    )
+
+
+def render_proposed_event(proposed: dict):
+    if not proposed:
+        return
+
+    st.markdown('<div class="section-title">📌 Proposed event</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="pill">Not created</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="card-title">{proposed.get("title", "(No title)")}</div>', unsafe_allow_html=True)
+    if proposed.get("start"):
+        st.markdown(f"**Start:** {format_datetime(proposed.get('start'))}")
+    if proposed.get("duration_min"):
+        st.markdown(f"**Duration:** {proposed.get('duration_min')} minutes")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_needs_clarification(result: dict):
@@ -467,7 +492,54 @@ def render_generic_message(decision: dict):
     st.info(message)
 
 
-def render_assistant_result(decision: dict, result: dict | None):
+def render_reply_and_create_event(result: dict):
+    status = result.get("status")
+
+    if status == "success":
+        st.success(result.get("message", "Reply draft and calendar event created successfully."))
+        reply_result = result.get("reply", {}) or {}
+        calendar_result = result.get("calendar", {}) or {}
+
+        if reply_result:
+            render_reply_draft(reply_result)
+        if calendar_result and calendar_result.get("status") == "created":
+            render_created_event(calendar_result)
+        return
+
+    if status == "partial_success":
+        st.warning(result.get("message", "Partial success."))
+        reply_result = result.get("reply", {}) or {}
+        calendar_result = result.get("calendar", {}) or {}
+
+        if reply_result:
+            render_reply_draft(reply_result)
+
+        cal_status = calendar_result.get("status")
+        if cal_status == "conflict_detected":
+            render_conflicts_from_list(
+                calendar_result.get("conflicts", []) or [],
+                "⚠️ Calendar conflict detected",
+                calendar_result.get("message", "Event not created because of a conflict."),
+            )
+            render_proposed_event(calendar_result.get("proposed_event", {}) or {})
+        elif cal_status == "needs_clarification":
+            render_needs_clarification(calendar_result)
+        elif cal_status == "created":
+            render_created_event(calendar_result)
+        return
+
+    if status == "not_found":
+        st.warning(result.get("message", "Nothing found."))
+        return
+
+    if status == "needs_clarification":
+        render_needs_clarification(result)
+        return
+
+    render_generic_message({"message": result.get("message", "Done.")})
+
+
+def render_assistant_result(decision: dict, result):
     action = (decision or {}).get("action") or ""
 
     if isinstance(result, dict) and result.get("status") == "error":
@@ -487,12 +559,23 @@ def render_assistant_result(decision: dict, result: dict | None):
         return
 
     if action == "create_event":
+        if isinstance(result, dict) and result.get("status") == "conflict_detected":
+            render_conflicts_from_list(
+                result.get("conflicts", []) or [],
+                "⚠️ Calendar conflict detected",
+                result.get("message", "Conflict detected."),
+            )
+            render_proposed_event(result.get("proposed_event", {}) or {})
+            return
+
         if decision.get("has_conflicts"):
             render_conflicts(decision)
             return
+
         if isinstance(result, dict) and result.get("status") == "created":
             render_created_event(result)
             return
+
         render_generic_message(decision)
         return
 
@@ -516,6 +599,10 @@ def render_assistant_result(decision: dict, result: dict | None):
         if result.get("status") == "reply_draft_created":
             render_reply_draft(result)
             return
+
+    if action == "reply_and_create_event" and isinstance(result, dict):
+        render_reply_and_create_event(result)
+        return
 
     if action == "suggest_times":
         render_meeting_options(decision)
@@ -547,6 +634,10 @@ with st.sidebar:
 
     if st.button("↩️ Reply to latest email", use_container_width=True):
         submit_prompt('reply to my latest email saying "Thanks for the update"')
+        st.rerun()
+
+    if st.button("🤝 Reply + create meeting", use_container_width=True):
+        submit_prompt('reply to my latest email saying "I am available tomorrow at 2pm" and create the meeting')
         st.rerun()
 
     if st.button("📅 Show my calendar for next week", use_container_width=True):
@@ -610,6 +701,7 @@ if not st.session_state.messages:
             • show my latest emails<br>
             • read my latest email<br>
             • reply to my latest email saying "Thanks for the update"<br>
+            • reply to my latest email saying "I am available tomorrow at 2pm" and create the meeting<br>
             • show my calendar for next week<br>
             • create an event called Budget Review tomorrow at 2pm for 45 minutes<br>
             • draft an email to sarah@example.com about the proposal<br>

@@ -86,7 +86,6 @@ def _parse_time_from_text(text: str) -> Optional[Tuple[int, int]]:
 def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: ZoneInfo) -> datetime:
     now = datetime.now(tz)
     tf = (timeframe or "").lower().strip()
-
     parsed_time = _parse_time_from_text(raw_text)
 
     if tf == "tomorrow":
@@ -162,6 +161,59 @@ def _build_reply_body(entities: Dict[str, Any]) -> str:
     return "Thanks for the update."
 
 
+def _build_create_event_decision(intent: str, entities: Dict[str, Any], original_text: str) -> Dict[str, Any]:
+    raw = (entities.get("raw") or original_text or "").strip()
+    timeframe = (entities.get("timeframe") or "").strip() or None
+    duration_min = _safe_int(entities.get("duration_min", 30), 30)
+    duration_min = max(5, min(duration_min, 240))
+
+    explicit_title = (entities.get("title") or "").strip()
+    title = explicit_title or _infer_event_title(raw)
+
+    start_source = (entities.get("start_hint") or raw or "").strip()
+    start_dt = _default_start_from_timeframe(timeframe, start_source, DEFAULT_TZ)
+    end_dt = start_dt + timedelta(minutes=duration_min)
+
+    attendee_emails = entities.get("attendee_emails", [])
+    attendee_names = entities.get("attendee_names", [])
+
+    try:
+        busy_blocks = get_busy_blocks(start_dt, DEFAULT_TZ, use_google=True)
+    except Exception:
+        busy_blocks = get_busy_blocks(start_dt, DEFAULT_TZ, use_google=False)
+
+    conflicts = check_conflicts(start_dt, end_dt, busy_blocks, DEFAULT_TZ)
+
+    result = {
+        "action": "create_event",
+        "intent": intent,
+        "provider": DEFAULT_PROVIDER,
+        "title": title,
+        "start": start_dt.isoformat(),
+        "duration_min": duration_min,
+        "attendee_emails": attendee_emails,
+        "attendee_names": attendee_names,
+        "start_hint": entities.get("start_hint"),
+    }
+
+    if conflicts:
+        conflict_strs = [
+            f"{c['title']} ({c['start']} – {c['end']})" for c in conflicts
+        ]
+        result["conflicts"] = conflicts
+        result["has_conflicts"] = True
+        result["message"] = (
+            f"Conflict detected! You are busy during: "
+            + ", ".join(conflict_strs)
+            + ". You can still create the event or pick a different time."
+        )
+    else:
+        result["has_conflicts"] = False
+        result["message"] = "No conflicts found. Creating your event."
+
+    return result
+
+
 def handle_intent(intent_data: dict) -> dict:
     intent = (intent_data or {}).get("intent") or "unknown"
     entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
@@ -181,52 +233,7 @@ def handle_intent(intent_data: dict) -> dict:
 
     # ---------- CALENDAR: CREATE EVENT ----------
     if intent == "create_event":
-        raw = (entities.get("raw") or original_text or "").strip()
-        timeframe = (entities.get("timeframe") or "").strip() or None
-        duration_min = _safe_int(entities.get("duration_min", 30), 30)
-        duration_min = max(5, min(duration_min, 240))
-
-        title = _infer_event_title(raw)
-        start_dt = _default_start_from_timeframe(timeframe, raw, DEFAULT_TZ)
-        end_dt = start_dt + timedelta(minutes=duration_min)
-
-        attendee_emails = entities.get("attendee_emails", [])
-        attendee_names = entities.get("attendee_names", [])
-
-        try:
-            busy_blocks = get_busy_blocks(start_dt, DEFAULT_TZ, use_google=True)
-        except Exception:
-            busy_blocks = get_busy_blocks(start_dt, DEFAULT_TZ, use_google=False)
-
-        conflicts = check_conflicts(start_dt, end_dt, busy_blocks, DEFAULT_TZ)
-
-        result = {
-            "action": "create_event",
-            "intent": intent,
-            "provider": DEFAULT_PROVIDER,
-            "title": title,
-            "start": start_dt.isoformat(),
-            "duration_min": duration_min,
-            "attendee_emails": attendee_emails,
-            "attendee_names": attendee_names,
-        }
-
-        if conflicts:
-            conflict_strs = [
-                f"{c['title']} ({c['start']} – {c['end']})" for c in conflicts
-            ]
-            result["conflicts"] = conflicts
-            result["has_conflicts"] = True
-            result["message"] = (
-                f"Conflict detected! You are busy during: "
-                + ", ".join(conflict_strs)
-                + ". You can still create the event or pick a different time."
-            )
-        else:
-            result["has_conflicts"] = False
-            result["message"] = "No conflicts found. Creating your event."
-
-        return result
+        return _build_create_event_decision(intent, entities, original_text)
 
     # ---------- EMAIL: LIST EMAILS ----------
     if intent == "list_emails":
@@ -270,6 +277,32 @@ def handle_intent(intent_data: dict) -> dict:
             "body": body,
             "tone": tone,
             "message": "Preparing a reply draft for the requested email.",
+        }
+
+    # ---------- EMAIL + CALENDAR: REPLY AND CREATE EVENT ----------
+    if intent == "reply_and_create_event":
+        email_reference = entities.get("email_reference") or "latest"
+        email_index = entities.get("email_index")
+        tone = entities.get("tone") or "neutral"
+        body = _build_reply_body(entities)
+
+        event_decision = _build_create_event_decision(intent, entities, original_text)
+
+        return {
+            "action": "reply_and_create_event",
+            "intent": intent,
+            "provider": DEFAULT_PROVIDER,
+            "email_reference": email_reference,
+            "email_index": email_index,
+            "body": body,
+            "tone": tone,
+            "event_title": event_decision.get("title"),
+            "start": event_decision.get("start"),
+            "duration_min": event_decision.get("duration_min"),
+            "start_hint": event_decision.get("start_hint"),
+            "has_conflicts": event_decision.get("has_conflicts", False),
+            "conflicts": event_decision.get("conflicts", []),
+            "message": "Preparing a reply draft and calendar event.",
         }
 
     # ---------- MEETING ----------

@@ -47,6 +47,67 @@ class DraftEmailRequest(BaseModel):
 
 
 # -----------------------
+# HELPERS
+# -----------------------
+def _resolve_target_email(
+    provider: str,
+    email_reference: str,
+    email_index: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """
+    Resolve the requested email into a fully-read Gmail message.
+    Uses primary_only=True to avoid promotions when user says 'latest email'.
+    """
+    if email_reference == "latest":
+        latest_list = list_emails_service(
+            provider=provider,
+            max_results=1,
+            inbox_only=False,
+            primary_only=True,
+        )
+        emails = latest_list.get("emails", []) or []
+        if not emails:
+            return None
+
+        message_id = emails[0].get("id")
+        if not message_id:
+            return None
+
+        read_result = read_email_service(provider=provider, message_id=message_id)
+        return (read_result or {}).get("email") or None
+
+    if email_reference in {"indexed", "first"}:
+        index = 1
+        if email_reference == "first":
+            index = 1
+        elif email_index:
+            try:
+                index = max(1, int(email_index))
+            except Exception:
+                index = 1
+
+        email_list = list_emails_service(
+            provider=provider,
+            max_results=max(index, 1),
+            inbox_only=False,
+            primary_only=True,
+        )
+        emails = email_list.get("emails", []) or []
+
+        if len(emails) < index:
+            return None
+
+        message_id = emails[index - 1].get("id")
+        if not message_id:
+            return None
+
+        read_result = read_email_service(provider=provider, message_id=message_id)
+        return (read_result or {}).get("email") or None
+
+    return None
+
+
+# -----------------------
 # ENDPOINTS
 # -----------------------
 @app.get("/health")
@@ -115,6 +176,8 @@ def assistant(payload: ParseIntentRequest):
             start = (decision or {}).get("start") or entities.get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
             attendee_emails = (decision or {}).get("attendee_emails") or entities.get("attendee_emails") or []
+            has_conflicts = bool((decision or {}).get("has_conflicts", False))
+            conflicts = (decision or {}).get("conflicts", []) or []
 
             if not title or not start:
                 result = {
@@ -122,6 +185,17 @@ def assistant(payload: ParseIntentRequest):
                     "missing": [k for k in ["title", "start"] if not (title if k == "title" else start)],
                     "message": "I can create the event, but I need at least a title and a start time.",
                     "example": 'Try: "Create an event called Strategy Sync tomorrow at 2pm for 30 minutes"',
+                }
+            elif has_conflicts:
+                result = {
+                    "status": "conflict_detected",
+                    "message": "I found a calendar conflict, so I did not create the event.",
+                    "conflicts": conflicts,
+                    "proposed_event": {
+                        "title": title,
+                        "start": start,
+                        "duration_min": int(duration_min),
+                    },
                 }
             else:
                 result = create_event_service(
@@ -156,55 +230,21 @@ def assistant(payload: ParseIntentRequest):
             if email_index is None:
                 email_index = entities.get("email_index")
 
-            if email_reference == "latest":
-                latest_list = list_emails_service(
-                    provider=provider,
-                    max_results=1,
-                    inbox_only=False,
-                    primary_only=True,
-                )
-                emails = latest_list.get("emails", []) or []
+            target_email = _resolve_target_email(
+                provider=provider,
+                email_reference=email_reference,
+                email_index=email_index,
+            )
 
-                if not emails:
-                    result = {
-                        "status": "not_found",
-                        "message": "No emails found in your inbox.",
-                    }
-                else:
-                    message_id = emails[0].get("id")
-                    result = read_email_service(provider=provider, message_id=message_id)
-
-            elif email_reference in {"indexed", "first"}:
-                index = 1
-                if email_reference == "first":
-                    index = 1
-                elif email_index:
-                    try:
-                        index = max(1, int(email_index))
-                    except Exception:
-                        index = 1
-
-                email_list = list_emails_service(
-                    provider=provider,
-                    max_results=max(index, 1),
-                    inbox_only=False,
-                    primary_only=True,
-                )
-                emails = email_list.get("emails", []) or []
-
-                if len(emails) < index:
-                    result = {
-                        "status": "not_found",
-                        "message": f"I couldn't find email #{index}.",
-                    }
-                else:
-                    message_id = emails[index - 1].get("id")
-                    result = read_email_service(provider=provider, message_id=message_id)
-
+            if not target_email:
+                result = {
+                    "status": "not_found",
+                    "message": "I couldn't find the requested email.",
+                }
             else:
                 result = {
-                    "status": "needs_clarification",
-                    "message": "I can read an email, but I need a clearer reference like 'latest email' or 'email 1'.",
+                    "provider": provider,
+                    "email": target_email,
                 }
 
         # -----------------------
@@ -217,62 +257,19 @@ def assistant(payload: ParseIntentRequest):
                 email_index = entities.get("email_index")
 
             body = (decision or {}).get("body") or entities.get("body_hint") or "Thanks for the update."
-            target_email = None
 
-            if email_reference == "latest":
-                latest_list = list_emails_service(
-                    provider=provider,
-                    max_results=1,
-                    inbox_only=False,
-                    primary_only=True,
-                )
-                emails = latest_list.get("emails", []) or []
+            target_email = _resolve_target_email(
+                provider=provider,
+                email_reference=email_reference,
+                email_index=email_index,
+            )
 
-                if not emails:
-                    result = {
-                        "status": "not_found",
-                        "message": "No emails found to reply to.",
-                    }
-                else:
-                    message_id = emails[0].get("id")
-                    read_result = read_email_service(provider=provider, message_id=message_id)
-                    target_email = (read_result or {}).get("email") or {}
-
-            elif email_reference in {"indexed", "first"}:
-                index = 1
-                if email_reference == "first":
-                    index = 1
-                elif email_index:
-                    try:
-                        index = max(1, int(email_index))
-                    except Exception:
-                        index = 1
-
-                email_list = list_emails_service(
-                    provider=provider,
-                    max_results=max(index, 1),
-                    inbox_only=False,
-                    primary_only=True,
-                )
-                emails = email_list.get("emails", []) or []
-
-                if len(emails) < index:
-                    result = {
-                        "status": "not_found",
-                        "message": f"I couldn't find email #{index} to reply to.",
-                    }
-                else:
-                    message_id = emails[index - 1].get("id")
-                    read_result = read_email_service(provider=provider, message_id=message_id)
-                    target_email = (read_result or {}).get("email") or {}
-
-            else:
+            if not target_email:
                 result = {
-                    "status": "needs_clarification",
-                    "message": "I can reply to an email, but I need a clearer reference like 'latest email' or 'email 1'.",
+                    "status": "not_found",
+                    "message": "No email found to reply to.",
                 }
-
-            if result is None and target_email is not None:
+            else:
                 raw_from = target_email.get("from") or ""
                 to_email = _extract_email_address(raw_from)
                 subject = target_email.get("subject") or "Quick Follow-Up"
@@ -296,6 +293,95 @@ def assistant(payload: ParseIntentRequest):
                         body=str(body),
                         thread_id=thread_id,
                     )
+
+        # -----------------------
+        # REPLY + CREATE EVENT
+        # -----------------------
+        elif action in {"reply_and_create_event"}:
+            email_reference = entities.get("email_reference") or "latest"
+            email_index = entities.get("email_index")
+            body = (decision or {}).get("body") or entities.get("body_hint") or "I am available at that time."
+            event_title = (decision or {}).get("event_title") or entities.get("title") or "Meeting"
+            event_start = (decision or {}).get("start")
+            duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
+            has_conflicts = bool((decision or {}).get("has_conflicts", False))
+            conflicts = (decision or {}).get("conflicts", []) or []
+
+            target_email = _resolve_target_email(
+                provider=provider,
+                email_reference=email_reference,
+                email_index=email_index,
+            )
+
+            if not target_email:
+                result = {
+                    "status": "not_found",
+                    "message": "No email found to reply to.",
+                }
+            else:
+                raw_from = target_email.get("from") or ""
+                to_email = _extract_email_address(raw_from)
+                subject = target_email.get("subject") or "Quick Follow-Up"
+                thread_id = target_email.get("threadId") or ""
+
+                if not to_email:
+                    result = {
+                        "status": "needs_clarification",
+                        "message": "I found the email, but I couldn't extract the sender email address.",
+                    }
+                elif not thread_id:
+                    result = {
+                        "status": "needs_clarification",
+                        "message": "I found the email, but I couldn't extract the thread ID.",
+                    }
+                else:
+                    reply_result = create_gmail_reply_draft_service(
+                        provider=provider,
+                        to=to_email,
+                        subject=subject,
+                        body=str(body),
+                        thread_id=thread_id,
+                    )
+
+                    if not event_start:
+                        result = {
+                            "status": "partial_success",
+                            "reply": reply_result,
+                            "calendar": {
+                                "status": "needs_clarification",
+                                "message": "Reply draft created, but I could not determine the event start time.",
+                            },
+                        }
+                    elif has_conflicts:
+                        result = {
+                            "status": "partial_success",
+                            "reply": reply_result,
+                            "calendar": {
+                                "status": "conflict_detected",
+                                "message": "Reply draft created, but I did not create the calendar event because of a conflict.",
+                                "conflicts": conflicts,
+                                "proposed_event": {
+                                    "title": event_title,
+                                    "start": event_start,
+                                    "duration_min": int(duration_min),
+                                },
+                            },
+                            "message": "Reply draft created. Calendar event not created because of a conflict.",
+                        }
+                    else:
+                        calendar_result = create_event_service(
+                            provider=provider,
+                            title=str(event_title),
+                            start=str(event_start),
+                            duration_min=int(duration_min),
+                        )
+
+                        result = {
+                            "status": "success",
+                            "reply": reply_result,
+                            "calendar": calendar_result,
+                            "message": "Reply draft and calendar event created successfully.",
+                        }
 
         # -----------------------
         # CREATE GMAIL DRAFT

@@ -104,6 +104,12 @@ def _extract_duration_min(text: str) -> Optional[int]:
         if 5 <= n <= 240:
             return n
 
+    m2 = re.search(r"\bfor\s+(\d{1,3})\s*(min|mins|minute|minutes)\b", t)
+    if m2:
+        n = int(m2.group(1))
+        if 5 <= n <= 240:
+            return n
+
     if "half an hour" in t:
         return 30
     if "an hour" in t or "1 hour" in t:
@@ -124,7 +130,6 @@ def _extract_tone(text: str) -> str:
 def _extract_recipient(text: str) -> Optional[str]:
     t = (text or "").strip()
 
-    # 1) full email address first
     email_match = re.search(
         r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b",
         t,
@@ -132,17 +137,14 @@ def _extract_recipient(text: str) -> Optional[str]:
     if email_match:
         return email_match.group(0).lower()
 
-    # 2) email Sarah
     m = re.search(r"\bemail\s+([A-Z][a-z]+)\b", t)
     if m:
         return m.group(1).lower()
 
-    # 3) draft an email to Sarah
     m2 = re.search(r"\bto\s+([A-Z][a-z]+)\b", t)
     if m2 and "email" in t.lower():
         return m2.group(1).lower()
 
-    # 4) lowercase support: "draft an email to sarah"
     m3 = re.search(r"\bto\s+([a-z]+)\b", t.lower())
     if m3 and "email" in t.lower():
         return m3.group(1).lower()
@@ -174,12 +176,10 @@ def _extract_topic(text: str) -> Optional[str]:
 def _extract_email_subject(text: str) -> Optional[str]:
     t = (text or "").strip()
 
-    # subject "X"
     m = re.search(r'subject\s+"([^"]+)"', t, re.IGNORECASE)
     if m:
         return m.group(1).strip()
 
-    # about X
     m2 = re.search(r"\babout\s+(.+)", t, re.IGNORECASE)
     if m2:
         candidate = m2.group(1).strip().strip('"').strip("'")
@@ -193,17 +193,14 @@ def _extract_email_subject(text: str) -> Optional[str]:
 def _extract_email_body_hint(text: str) -> Optional[str]:
     t = (text or "").strip()
 
-    # saying "..."
     m = re.search(r'saying\s+"([^"]+)"', t, re.IGNORECASE)
     if m:
         return m.group(1).strip()
 
-    # say "..."
     m2 = re.search(r'say\s+"([^"]+)"', t, re.IGNORECASE)
     if m2:
         return m2.group(1).strip()
 
-    # replying "..."
     m3 = re.search(r'reply(?:ing)?\s+(?:with|saying)\s+"([^"]+)"', t, re.IGNORECASE)
     if m3:
         return m3.group(1).strip()
@@ -245,11 +242,105 @@ def _extract_email_index(text: str) -> Optional[int]:
     return None
 
 
+def _extract_time_string(text: str) -> Optional[str]:
+    t = (text or "").lower()
+
+    m = re.search(r"\bat\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", t, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    m2 = re.search(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b", t, re.IGNORECASE)
+    if m2:
+        return m2.group(1).strip()
+
+    m3 = re.search(r"\bat\s+([01]?\d|2[0-3]):([0-5]\d)\b", t)
+    if m3:
+        return f"{m3.group(1)}:{m3.group(2)}"
+
+    return None
+
+
+def _extract_event_title(text: str) -> Optional[str]:
+    t = (text or "").strip()
+
+    # called "X"
+    m = re.search(r'called\s+"([^"]+)"', t, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # called X ...
+    m2 = re.search(r"called\s+(.+)", t, re.IGNORECASE)
+    if m2:
+        candidate = m2.group(1).strip().strip('"').strip("'")
+
+        candidate = re.split(
+            r"\b("
+            r"tomorrow|today|next week|this week|next month|this month|"
+            r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+            r"at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
+            r"for\s+\d+\s*(?:min|mins|minute|minutes)|"
+            r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+            r")\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" ,.-")
+
+        if candidate:
+            return candidate[:120]
+
+    # create/schedule/add ... event/meeting ...
+    m3 = re.search(
+        r"\b(?:create|schedule|add|book|make|put)\s+(?:an?\s+)?(?:event|meeting|appointment)\s+(?:called\s+)?(.+)",
+        t,
+        re.IGNORECASE,
+    )
+    if m3:
+        candidate = m3.group(1).strip().strip('"').strip("'")
+
+        candidate = re.split(
+            r"\b("
+            r"tomorrow|today|next week|this week|next month|this month|"
+            r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+            r"at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
+            r"for\s+\d+\s*(?:min|mins|minute|minutes)|"
+            r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+            r")\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" ,.-")
+
+        if candidate and len(candidate) > 1:
+            return candidate[:120]
+
+    if re.search(r"\bmeeting\b", t, re.IGNORECASE):
+        return "Meeting"
+    if re.search(r"\bevent\b", t, re.IGNORECASE):
+        return "Event"
+    if re.search(r"\bappointment\b", t, re.IGNORECASE):
+        return "Appointment"
+
+    return None
+
+
+def _extract_start_hint(text: str) -> Optional[str]:
+    timeframe = _extract_timeframe(text)
+    time_str = _extract_time_string(text)
+
+    if timeframe and time_str:
+        return f"{timeframe} at {time_str}"
+    if timeframe:
+        return timeframe
+    if time_str:
+        return time_str
+    return None
+
+
 # -----------------------
 # CALENDAR HELPERS
 # -----------------------
 def _has_word(t: str, word: str) -> bool:
-    """Word-boundary check to avoid substring bugs."""
     return re.search(rf"\b{re.escape(word)}\b", t) is not None
 
 
@@ -279,6 +370,9 @@ def _extract_days(text: str) -> int:
     if _has_word(t, "tomorrow") or _has_word(t, "today"):
         return 1
 
+    if "next week" in t:
+        return 7
+
     return 7
 
 
@@ -297,13 +391,22 @@ def _looks_like_create_event(text: str) -> bool:
         "book an event",
         "add to my calendar",
         "put on my calendar",
+        "create a meeting",
+        "schedule a meeting",
+        "book a meeting",
+        "add a meeting",
+        "make a meeting",
+        "create an appointment",
+        "schedule an appointment",
     ]
     if any(p in t for p in create_phrases):
         return True
 
-    has_action = any(_has_word(t, w) for w in ["create", "add", "schedule", "book", "make"])
-    has_target = any(_has_word(t, w) for w in ["event", "meeting", "appointment"])
-    return has_action and has_target
+    has_action = any(_has_word(t, w) for w in ["create", "add", "schedule", "book", "make", "put"])
+    has_target = any(_has_word(t, w) for w in ["event", "meeting", "appointment", "calendar"])
+    has_time_context = bool(_extract_timeframe(t) or _extract_time_string(t))
+
+    return (has_action and has_target) or (has_action and has_time_context and _has_word(t, "calendar"))
 
 
 # -----------------------
@@ -351,6 +454,34 @@ def _looks_like_read_email(text: str) -> bool:
     return False
 
 
+def _looks_like_reply_and_create_event(text: str) -> bool:
+    t = (text or "").lower()
+
+    has_reply = (
+        "reply to my latest email" in t
+        or "reply to the latest email" in t
+        or "reply to my most recent email" in t
+        or "respond to my latest email" in t
+        or "respond to the latest email" in t
+        or bool(re.search(r"\b(reply|respond)\s+to\s+email\s+\d+\b", t))
+    )
+
+    has_create_event = (
+        "create the meeting" in t
+        or "create a meeting" in t
+        or "create an event" in t
+        or "schedule the meeting" in t
+        or "schedule a meeting" in t
+        or "create the event" in t
+        or "and create" in t
+        or "and schedule" in t
+    )
+
+    has_time_context = bool(_extract_timeframe(t) or _extract_time_string(t))
+
+    return has_reply and has_create_event and has_time_context
+
+
 def _looks_like_reply_email(text: str) -> bool:
     t = (text or "").lower()
 
@@ -393,7 +524,9 @@ def _looks_like_email_drafting(text: str) -> bool:
 def _classify_intent_rules(text: str) -> str:
     t = (text or "").lower()
 
-    # IMPORTANT: order matters
+    if _looks_like_reply_and_create_event(t):
+        return "reply_and_create_event"
+
     if _looks_like_create_event(t):
         return "create_event"
 
@@ -433,7 +566,19 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
 
     elif intent == "create_event":
         entities["raw"] = text
+        entities["title"] = _extract_event_title(text)
         entities["timeframe"] = _extract_timeframe(text)
+        entities["start_hint"] = _extract_start_hint(text)
+        entities["duration_min"] = _extract_duration_min(text) or 30
+
+    elif intent == "reply_and_create_event":
+        entities["email_reference"] = _extract_email_reference(text) or "latest"
+        entities["email_index"] = _extract_email_index(text)
+        entities["body_hint"] = _extract_email_body_hint(text)
+        entities["tone"] = _extract_tone(text)
+        entities["title"] = _extract_event_title(text) or "Meeting"
+        entities["timeframe"] = _extract_timeframe(text)
+        entities["start_hint"] = _extract_start_hint(text)
         entities["duration_min"] = _extract_duration_min(text) or 30
 
     elif intent == "reply_email":
@@ -505,6 +650,7 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         "list_emails",
         "read_email",
         "reply_email",
+        "reply_and_create_event",
         "unknown",
     }
     if intent not in allowed:
@@ -532,6 +678,16 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("body_hint", _extract_email_body_hint(text))
         entities.setdefault("tone", _extract_tone(text))
 
+    if intent == "reply_and_create_event":
+        entities.setdefault("email_reference", _extract_email_reference(text) or "latest")
+        entities.setdefault("email_index", _extract_email_index(text))
+        entities.setdefault("body_hint", _extract_email_body_hint(text))
+        entities.setdefault("tone", _extract_tone(text))
+        entities.setdefault("title", _extract_event_title(text) or "Meeting")
+        entities.setdefault("timeframe", _extract_timeframe(text))
+        entities.setdefault("start_hint", _extract_start_hint(text))
+        entities.setdefault("duration_min", _extract_duration_min(text) or 30)
+
     if intent == "follow_up_reminder":
         entities.setdefault("timeframe", _extract_timeframe(text) or "next week")
         entities.setdefault("topic", _extract_topic(text))
@@ -542,7 +698,9 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
 
     if intent == "create_event":
         entities.setdefault("raw", text)
+        entities.setdefault("title", _extract_event_title(text))
         entities.setdefault("timeframe", _extract_timeframe(text))
+        entities.setdefault("start_hint", _extract_start_hint(text))
         entities.setdefault("duration_min", _extract_duration_min(text) or 30)
 
     if intent == "list_emails":
@@ -568,7 +726,8 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
     system = (
         "You are an intent parser for an executive assistant. "
         "Return ONLY valid JSON with keys: intent, entities. "
-        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, list_events, create_event, list_emails, read_email, reply_email, unknown. "
+        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, "
+        "list_events, create_event, list_emails, read_email, reply_email, reply_and_create_event, unknown. "
         "entities should be an object. "
         "If unsure, use intent='unknown' and entities={}. "
         "Do NOT include extra text."
