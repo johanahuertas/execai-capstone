@@ -162,6 +162,17 @@ def clean_email_body(body: str, max_chars: int = 2000) -> str:
     return cleaned
 
 
+def append_assistant_message(decision: dict, result):
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "decision": decision,
+            "result": result,
+        }
+    )
+
+
 def submit_prompt(prompt: str):
     if not prompt.strip():
         return
@@ -215,24 +226,94 @@ def submit_prompt(prompt: str):
                     "detail": f"Draft email error: {e}",
                 }
 
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": "",
-                "decision": decision,
-                "result": result,
-            }
-        )
+        append_assistant_message(decision, result)
 
     except Exception as e:
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": "",
-                "decision": {"message": "Backend error"},
-                "result": {"status": "error", "detail": str(e)},
-            }
+        append_assistant_message(
+            {"message": "Backend error"},
+            {"status": "error", "detail": str(e)},
         )
+
+
+def create_event_directly(title: str, start: str, duration_min: int):
+    try:
+        res = requests.post(
+            f"{API_BASE}/integrations/google/create-event",
+            json={
+                "title": title,
+                "start": start,
+                "duration_min": int(duration_min),
+                "attendees": [],
+                "description": "",
+                "send_notifications": True,
+            },
+            timeout=25,
+        )
+        res.raise_for_status()
+        result = res.json()
+
+        decision = {
+            "action": "create_event",
+            "intent": "create_event",
+            "provider": "google",
+            "title": title,
+            "start": start,
+            "duration_min": int(duration_min),
+            "message": "Alternative event created.",
+        }
+
+        st.session_state.debug_last = {
+            "intent_data": {
+                "intent": "create_event",
+                "entities": {
+                    "title": title,
+                    "start": start,
+                    "duration_min": int(duration_min),
+                },
+                "mode": "ui_direct_action",
+                "note": "Created directly from alternative time button.",
+                "original_text": f"Create alternative event {title}",
+            },
+            "decision": decision,
+            "result": result,
+        }
+
+        append_assistant_message(decision, result)
+        st.rerun()
+
+    except Exception as e:
+        decision = {
+            "action": "create_event",
+            "intent": "create_event",
+            "provider": "google",
+            "title": title,
+            "start": start,
+            "duration_min": int(duration_min),
+            "message": "Failed to create alternative event.",
+        }
+        result = {
+            "status": "error",
+            "detail": str(e),
+        }
+
+        st.session_state.debug_last = {
+            "intent_data": {
+                "intent": "create_event",
+                "entities": {
+                    "title": title,
+                    "start": start,
+                    "duration_min": int(duration_min),
+                },
+                "mode": "ui_direct_action",
+                "note": "Alternative time creation failed.",
+                "original_text": f"Create alternative event {title}",
+            },
+            "decision": decision,
+            "result": result,
+        }
+
+        append_assistant_message(decision, result)
+        st.rerun()
 
 
 def render_event_list(result: dict):
@@ -451,6 +532,38 @@ def render_conflicts_from_list(conflicts: list, title_text: str = "⚠️ Confli
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+def render_alternatives(alternatives: list, proposed_event: dict | None = None, card_key_prefix: str = "alt"):
+    if not alternatives:
+        return
+
+    proposed_event = proposed_event or {}
+    event_title = proposed_event.get("title") or "Meeting"
+
+    st.markdown('<div class="section-title">🕒 Alternative times</div>', unsafe_allow_html=True)
+
+    for idx, alt in enumerate(alternatives):
+        label = alt.get("label", f"Option {idx + 1}")
+        start_raw = alt.get("start", "")
+        start = format_datetime(start_raw)
+        dur = alt.get("duration_min", proposed_event.get("duration_min", 30))
+
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="pill">Alternative</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="card-title">{label}</div>', unsafe_allow_html=True)
+        st.markdown(f"**Start:** {start}")
+        st.markdown(f"**Duration:** {dur} minutes")
+
+        button_key = f"{card_key_prefix}_{idx}_{start_raw}_{event_title}"
+        if st.button(f"Create this event ({label})", key=button_key, use_container_width=True):
+            create_event_directly(
+                title=event_title,
+                start=start_raw,
+                duration_min=int(dur),
+            )
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_conflicts(decision: dict):
     render_conflicts_from_list(
         decision.get("conflicts", []) or [],
@@ -522,6 +635,11 @@ def render_reply_and_create_event(result: dict):
                 calendar_result.get("message", "Event not created because of a conflict."),
             )
             render_proposed_event(calendar_result.get("proposed_event", {}) or {})
+            render_alternatives(
+                calendar_result.get("alternatives", []) or [],
+                calendar_result.get("proposed_event", {}) or {},
+                card_key_prefix="reply_create_alt",
+            )
         elif cal_status == "needs_clarification":
             render_needs_clarification(calendar_result)
         elif cal_status == "created":
@@ -565,11 +683,27 @@ def render_assistant_result(decision: dict, result):
                 "⚠️ Calendar conflict detected",
                 result.get("message", "Conflict detected."),
             )
-            render_proposed_event(result.get("proposed_event", {}) or {})
+            proposed = result.get("proposed_event", {}) or {}
+            render_proposed_event(proposed)
+            render_alternatives(
+                result.get("alternatives", []) or [],
+                proposed,
+                card_key_prefix="create_event_alt",
+            )
             return
 
         if decision.get("has_conflicts"):
             render_conflicts(decision)
+            proposed = {
+                "title": decision.get("title"),
+                "start": decision.get("start"),
+                "duration_min": decision.get("duration_min"),
+            }
+            render_alternatives(
+                decision.get("alternatives", []) or [],
+                proposed,
+                card_key_prefix="decision_alt",
+            )
             return
 
         if isinstance(result, dict) and result.get("status") == "created":
@@ -773,24 +907,13 @@ if prompt:
 
                 render_assistant_result(decision, result)
 
-                st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "decision": decision,
-                        "result": result,
-                    }
-                )
+                append_assistant_message(decision, result)
 
             except Exception as e:
                 st.error(f"Backend error: {e}")
-                st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "decision": {"message": "Backend error"},
-                        "result": {"status": "error", "detail": str(e)},
-                    }
+                append_assistant_message(
+                    {"message": "Backend error"},
+                    {"status": "error", "detail": str(e)},
                 )
 
 # -----------------------

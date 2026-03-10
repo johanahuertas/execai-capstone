@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 from zoneinfo import ZoneInfo
 
@@ -161,6 +161,75 @@ def _build_reply_body(entities: Dict[str, Any]) -> str:
     return "Thanks for the update."
 
 
+def _normalize_slot(slot: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "label": slot.get("label", "Option"),
+        "start": slot.get("start"),
+        "duration_min": slot.get("duration_min", 30),
+    }
+
+
+def _suggest_alternative_slots(
+    timeframe: Optional[str],
+    start_dt: datetime,
+    duration_min: int,
+    tz: ZoneInfo,
+    max_options: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Suggest a few alternative free slots near the requested window.
+    """
+    try:
+        search_start, search_end = timeframe_to_range(timeframe, tz)
+
+        # Make sure the requested start is inside the search window.
+        if start_dt < search_start:
+            search_start = start_dt.replace(hour=8, minute=0, second=0, microsecond=0)
+        if start_dt + timedelta(hours=8) > search_end:
+            search_end = max(search_end, start_dt.replace(hour=18, minute=0, second=0, microsecond=0))
+
+        try:
+            freebusy_data = get_freebusy_service(
+                provider="google",
+                time_min=search_start.isoformat(),
+                time_max=search_end.isoformat(),
+            )
+            busy_blocks = freebusy_data.get("busy_blocks", []) or []
+        except Exception:
+            busy_blocks = get_mock_busy_blocks(search_start, tz)
+
+        slots = find_available_slots(
+            busy_blocks=busy_blocks,
+            search_start=search_start,
+            search_end=search_end,
+            duration_min=duration_min,
+            tz=tz,
+        ) or []
+
+        # Prefer future options at or after the requested start
+        filtered: List[Dict[str, Any]] = []
+        for slot in slots:
+            slot_start_raw = slot.get("start")
+            if not slot_start_raw:
+                continue
+            try:
+                slot_start = datetime.fromisoformat(slot_start_raw)
+            except Exception:
+                continue
+
+            if slot_start >= start_dt:
+                filtered.append(_normalize_slot(slot))
+
+        # Fallback to earliest available if none after requested start
+        if not filtered:
+            filtered = [_normalize_slot(slot) for slot in slots[:max_options]]
+
+        return filtered[:max_options]
+
+    except Exception:
+        return []
+
+
 def _build_create_event_decision(intent: str, entities: Dict[str, Any], original_text: str) -> Dict[str, Any]:
     raw = (entities.get("raw") or original_text or "").strip()
     timeframe = (entities.get("timeframe") or "").strip() or None
@@ -200,15 +269,29 @@ def _build_create_event_decision(intent: str, entities: Dict[str, Any], original
         conflict_strs = [
             f"{c['title']} ({c['start']} – {c['end']})" for c in conflicts
         ]
+        alternatives = _suggest_alternative_slots(
+            timeframe=timeframe,
+            start_dt=start_dt,
+            duration_min=duration_min,
+            tz=DEFAULT_TZ,
+            max_options=3,
+        )
+
         result["conflicts"] = conflicts
         result["has_conflicts"] = True
+        result["alternatives"] = alternatives
         result["message"] = (
             f"Conflict detected! You are busy during: "
             + ", ".join(conflict_strs)
-            + ". You can still create the event or pick a different time."
+            + "."
         )
+        if alternatives:
+            result["message"] += " I found alternative times you can use instead."
+        else:
+            result["message"] += " I could not find alternative times yet."
     else:
         result["has_conflicts"] = False
+        result["alternatives"] = []
         result["message"] = "No conflicts found. Creating your event."
 
     return result
@@ -302,6 +385,7 @@ def handle_intent(intent_data: dict) -> dict:
             "start_hint": event_decision.get("start_hint"),
             "has_conflicts": event_decision.get("has_conflicts", False),
             "conflicts": event_decision.get("conflicts", []),
+            "alternatives": event_decision.get("alternatives", []),
             "message": "Preparing a reply draft and calendar event.",
         }
 

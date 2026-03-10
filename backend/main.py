@@ -9,7 +9,6 @@ from .intent import parse_intent as parse_intent_ai
 from .orchestrator import handle_intent
 from .integrations import router as integrations_router
 
-# Reusable services
 from .integrations import (
     list_events_service,
     create_event_service,
@@ -21,8 +20,6 @@ from .integrations import (
 )
 
 app = FastAPI(title="ExecAI Backend")
-
-# Mount integrations endpoints
 app.include_router(integrations_router)
 
 
@@ -56,7 +53,7 @@ def _resolve_target_email(
 ) -> Optional[Dict[str, Any]]:
     """
     Resolve the requested email into a fully-read Gmail message.
-    Uses primary_only=True to avoid promotions when user says 'latest email'.
+    Prefer primary inbox so 'latest email' is not usually a promo.
     """
     if email_reference == "latest":
         latest_list = list_emails_service(
@@ -108,7 +105,7 @@ def _resolve_target_email(
 
 
 # -----------------------
-# ENDPOINTS
+# BASIC ROUTES
 # -----------------------
 @app.get("/health")
 def health_check():
@@ -123,15 +120,17 @@ def parse_intent_endpoint(payload: ParseIntentRequest):
     return parse_intent_ai(text)
 
 
+# -----------------------
+# MAIN ASSISTANT
+# -----------------------
 @app.post("/assistant")
 def assistant(payload: ParseIntentRequest):
     """
-    Main agent entry point.
-
-    1) Understand intent (hybrid NLP)
-    2) Orchestrator decides
-    3) main.py executes integrations when needed
-    4) Return structured response
+    Main agent entry point:
+    1) Parse intent
+    2) Build decision
+    3) Execute integration if needed
+    4) Return intent_data + decision + result
     """
     text = (payload.text or "").strip()
     if not text:
@@ -178,6 +177,7 @@ def assistant(payload: ParseIntentRequest):
             attendee_emails = (decision or {}).get("attendee_emails") or entities.get("attendee_emails") or []
             has_conflicts = bool((decision or {}).get("has_conflicts", False))
             conflicts = (decision or {}).get("conflicts", []) or []
+            alternatives = (decision or {}).get("alternatives", []) or []
 
             if not title or not start:
                 result = {
@@ -191,6 +191,7 @@ def assistant(payload: ParseIntentRequest):
                     "status": "conflict_detected",
                     "message": "I found a calendar conflict, so I did not create the event.",
                     "conflicts": conflicts,
+                    "alternatives": alternatives,
                     "proposed_event": {
                         "title": title,
                         "start": start,
@@ -207,7 +208,7 @@ def assistant(payload: ParseIntentRequest):
                 )
 
         # -----------------------
-        # LIST EMAILS (general inbox)
+        # LIST EMAILS
         # -----------------------
         elif action in {"list_emails", "get_emails", "show_inbox"}:
             max_results = (decision or {}).get("max_results")
@@ -222,7 +223,7 @@ def assistant(payload: ParseIntentRequest):
             )
 
         # -----------------------
-        # READ EMAIL (prefer primary)
+        # READ EMAIL
         # -----------------------
         elif action in {"read_email", "open_email"}:
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
@@ -248,7 +249,37 @@ def assistant(payload: ParseIntentRequest):
                 }
 
         # -----------------------
-        # REPLY TO EMAIL (prefer primary)
+        # CREATE DRAFT
+        # -----------------------
+        elif action in {"create_draft", "draft_email"}:
+            recipient = (decision or {}).get("recipient") or entities.get("recipient")
+            subject = (decision or {}).get("subject") or entities.get("subject") or "Quick Follow-Up"
+            body = (decision or {}).get("body") or entities.get("body_hint") or ""
+
+            if not recipient:
+                result = {
+                    "status": "needs_clarification",
+                    "missing": ["recipient"],
+                    "message": "I can create the Gmail draft, but I need the recipient email address.",
+                    "example": 'Try: "Draft an email to sarah@example.com about the proposal"',
+                }
+            elif "@" not in str(recipient):
+                result = {
+                    "status": "needs_clarification",
+                    "missing": ["recipient_email"],
+                    "message": f'I understood the recipient as "{recipient}", but I need the full email address to create a real Gmail draft.',
+                    "example": f'Draft an email to {recipient}@example.com about the proposal',
+                }
+            else:
+                result = create_gmail_draft_service(
+                    provider=provider,
+                    to=str(recipient),
+                    subject=str(subject),
+                    body=str(body),
+                )
+
+        # -----------------------
+        # REPLY EMAIL
         # -----------------------
         elif action in {"reply_email", "create_reply_draft"}:
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
@@ -306,6 +337,7 @@ def assistant(payload: ParseIntentRequest):
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
             has_conflicts = bool((decision or {}).get("has_conflicts", False))
             conflicts = (decision or {}).get("conflicts", []) or []
+            alternatives = (decision or {}).get("alternatives", []) or []
 
             target_email = _resolve_target_email(
                 provider=provider,
@@ -360,6 +392,7 @@ def assistant(payload: ParseIntentRequest):
                                 "status": "conflict_detected",
                                 "message": "Reply draft created, but I did not create the calendar event because of a conflict.",
                                 "conflicts": conflicts,
+                                "alternatives": alternatives,
                                 "proposed_event": {
                                     "title": event_title,
                                     "start": event_start,
@@ -384,34 +417,13 @@ def assistant(payload: ParseIntentRequest):
                         }
 
         # -----------------------
-        # CREATE GMAIL DRAFT
+        # UNKNOWN
         # -----------------------
-        elif action in {"create_draft", "draft_email"}:
-            recipient = (decision or {}).get("recipient") or entities.get("recipient")
-            subject = (decision or {}).get("subject") or entities.get("subject") or "Quick Follow-Up"
-            body = (decision or {}).get("body") or entities.get("body_hint") or ""
-
-            if not recipient:
-                result = {
-                    "status": "needs_clarification",
-                    "missing": ["recipient"],
-                    "message": "I can create the Gmail draft, but I need the recipient email address.",
-                    "example": 'Try: "Draft an email to sarah@example.com about the proposal"',
-                }
-            elif "@" not in str(recipient):
-                result = {
-                    "status": "needs_clarification",
-                    "missing": ["recipient_email"],
-                    "message": f'I understood the recipient as "{recipient}", but I need the full email address to create a real Gmail draft.',
-                    "example": f'Draft an email to {recipient}@example.com about the proposal',
-                }
-            else:
-                result = create_gmail_draft_service(
-                    provider=provider,
-                    to=str(recipient),
-                    subject=str(subject),
-                    body=str(body),
-                )
+        else:
+            result = {
+                "status": "unsupported_action",
+                "message": f"Action '{action}' is not supported yet.",
+            }
 
     except HTTPException as e:
         result = {
@@ -433,6 +445,9 @@ def assistant(payload: ParseIntentRequest):
     }
 
 
+# -----------------------
+# LEGACY / MOCK ENDPOINTS
+# -----------------------
 @app.post("/suggest-times")
 def suggest_times(payload: ParseIntentRequest):
     text = (payload.text or "").strip()
