@@ -122,26 +122,16 @@ def clean_email_body(body: str, max_chars: int = 2000) -> str:
         return ""
 
     cleaned = body
-
-    # Decode HTML entities first
     cleaned = html.unescape(cleaned)
 
-    # Remove script/style blocks
     cleaned = re.sub(r"<script.*?>.*?</script>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
     cleaned = re.sub(r"<style.*?>.*?</style>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
-
-    # Remove HTML comments
     cleaned = re.sub(r"<!--.*?-->", " ", cleaned, flags=re.DOTALL)
-
-    # Remove VML / Office / XML-ish blocks that appear in email templates
     cleaned = re.sub(r"<xml.*?>.*?</xml>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
     cleaned = re.sub(r"<o:.*?>.*?</o:.*?>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
     cleaned = re.sub(r"<v:.*?>.*?</v:.*?>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
-
-    # Remove all remaining HTML tags
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
 
-    # Remove common CSS leftovers / template garbage
     cleaned = re.sub(
         r"\b(width|height|font|color|background|margin|padding|display|line-height|border|mso-[a-z-]+)[^;>{}]*(;|:)",
         " ",
@@ -149,18 +139,14 @@ def clean_email_body(body: str, max_chars: int = 2000) -> str:
         flags=re.IGNORECASE,
     )
 
-    # Remove quoted-printable soft line breaks and artifacts
     cleaned = cleaned.replace("=\r\n", "")
     cleaned = cleaned.replace("=\n", "")
     cleaned = cleaned.replace("=20", " ")
     cleaned = cleaned.replace("=3D", "=")
 
-    # Remove noisy repeated punctuation / strange invisible-space fragments
-    cleaned = re.sub(r"[ ​⁠]+", " ", cleaned)  # non-breaking / invisible spaces
+    cleaned = re.sub(r"[ ​⁠]+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
-    # If it still looks like a giant HTML template, keep the most readable part
-    # Prefer content after a title-ish sentence if possible
     if len(cleaned) > 600:
         match = re.search(
             r"(We've been perfecting jeans since 1873.*|I hope.*|Hello.*|Hi.*|Thank you.*|Your order.*|Your account.*)",
@@ -206,7 +192,6 @@ def submit_prompt(prompt: str):
             "result": result,
         }
 
-        # fallback only for old mock draft endpoint if needed
         intent = (intent_data.get("intent") or "").strip()
         entities = intent_data.get("entities") or {}
 
@@ -358,7 +343,7 @@ def render_read_email(result: dict):
     if email_data.get("threadId"):
         st.markdown(f"**Thread ID:** `{email_data.get('threadId')}`")
 
-    st.text_area("Email body", value=body, height=320, disabled=True)
+    st.text_area("Email body", value=body, height=320, disabled=True, key=f"read_body_{email_data.get('id', 'x')}")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -371,7 +356,13 @@ def render_created_draft(result: dict):
     st.markdown('<div class="pill">Gmail Draft</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email_data.get('to', '')}")
     st.markdown(f"**Subject:** {email_data.get('subject', '')}")
-    st.text_area("Draft body", value=email_data.get("body", ""), height=180, disabled=True)
+    st.text_area(
+        "Draft body",
+        value=email_data.get("body", ""),
+        height=180,
+        disabled=True,
+        key=f"draft_body_{draft.get('id', 'x')}",
+    )
 
     if draft.get("id"):
         st.markdown(f"**Draft ID:** `{draft.get('id')}`")
@@ -379,6 +370,32 @@ def render_created_draft(result: dict):
         st.markdown(f"**Thread ID:** `{draft.get('threadId')}`")
 
     st.success("The draft was created successfully in Gmail.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_reply_draft(result: dict):
+    draft = result.get("draft", {}) or {}
+    email_data = result.get("email", {}) or {}
+
+    st.markdown('<div class="section-title">↩️ Reply draft created</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="pill">Gmail Reply Draft</div>', unsafe_allow_html=True)
+    st.markdown(f"**To:** {email_data.get('to', '')}")
+    st.markdown(f"**Subject:** {email_data.get('subject', '')}")
+    st.text_area(
+        "Reply body",
+        value=email_data.get("body", ""),
+        height=180,
+        disabled=True,
+        key=f"reply_body_{draft.get('id', 'x')}",
+    )
+
+    if draft.get("id"):
+        st.markdown(f"**Draft ID:** `{draft.get('id')}`")
+    if draft.get("threadId"):
+        st.markdown(f"**Thread ID:** `{draft.get('threadId')}`")
+
+    st.success("The reply draft was created successfully in Gmail.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -390,7 +407,7 @@ def render_mock_draft(result: dict):
     st.markdown('<div class="pill">Mock Draft</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email_data.get('to', '')}")
     st.markdown(f"**Subject:** {email_data.get('subject', '')}")
-    st.text_area("Body", value=email_data.get("body", ""), height=220, disabled=True)
+    st.text_area("Body", value=email_data.get("body", ""), height=220, disabled=True, key="mock_draft_body")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -406,7 +423,7 @@ def render_meeting_options(decision: dict):
     if busy_display:
         st.warning("Busy times: " + " · ".join(busy_display))
 
-    for opt in options:
+    for idx, opt in enumerate(options):
         label = opt.get("label", "Option")
         start = format_datetime(opt.get("start", ""))
         dur = opt.get("duration_min", 30)
@@ -495,6 +512,11 @@ def render_assistant_result(decision: dict, result: dict | None):
             render_mock_draft(result)
             return
 
+    if action == "reply_email" and isinstance(result, dict):
+        if result.get("status") == "reply_draft_created":
+            render_reply_draft(result)
+            return
+
     if action == "suggest_times":
         render_meeting_options(decision)
         return
@@ -521,6 +543,10 @@ with st.sidebar:
 
     if st.button("📩 Read latest email", use_container_width=True):
         submit_prompt("read my latest email")
+        st.rerun()
+
+    if st.button("↩️ Reply to latest email", use_container_width=True):
+        submit_prompt('reply to my latest email saying "Thanks for the update"')
         st.rerun()
 
     if st.button("📅 Show my calendar for next week", use_container_width=True):
@@ -583,6 +609,7 @@ if not st.session_state.messages:
             <strong>Try asking something like:</strong><br><br>
             • show my latest emails<br>
             • read my latest email<br>
+            • reply to my latest email saying "Thanks for the update"<br>
             • show my calendar for next week<br>
             • create an event called Budget Review tomorrow at 2pm for 45 minutes<br>
             • draft an email to sarah@example.com about the proposal<br>

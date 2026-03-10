@@ -9,13 +9,15 @@ from .intent import parse_intent as parse_intent_ai
 from .orchestrator import handle_intent
 from .integrations import router as integrations_router
 
-# ✅ Reusable services
+# Reusable services
 from .integrations import (
     list_events_service,
     create_event_service,
     list_emails_service,
     create_gmail_draft_service,
+    create_gmail_reply_draft_service,
     read_email_service,
+    _extract_email_address,
 )
 
 app = FastAPI(title="ExecAI Backend")
@@ -86,7 +88,6 @@ def assistant(payload: ParseIntentRequest):
         }
 
     entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
-
     action = ((decision or {}).get("action") or (intent_data or {}).get("intent") or "").lower().strip()
     provider = ((decision or {}).get("provider") or "google").lower().strip()
 
@@ -132,7 +133,7 @@ def assistant(payload: ParseIntentRequest):
                 )
 
         # -----------------------
-        # LIST EMAILS
+        # LIST EMAILS (general inbox)
         # -----------------------
         elif action in {"list_emails", "get_emails", "show_inbox"}:
             max_results = (decision or {}).get("max_results")
@@ -142,10 +143,12 @@ def assistant(payload: ParseIntentRequest):
             result = list_emails_service(
                 provider=provider,
                 max_results=int(max_results),
+                inbox_only=True,
+                primary_only=False,
             )
 
         # -----------------------
-        # READ EMAIL
+        # READ EMAIL (prefer primary)
         # -----------------------
         elif action in {"read_email", "open_email"}:
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
@@ -153,9 +156,13 @@ def assistant(payload: ParseIntentRequest):
             if email_index is None:
                 email_index = entities.get("email_index")
 
-            # latest email
             if email_reference == "latest":
-                latest_list = list_emails_service(provider=provider, max_results=1)
+                latest_list = list_emails_service(
+                    provider=provider,
+                    max_results=1,
+                    inbox_only=False,
+                    primary_only=True,
+                )
                 emails = latest_list.get("emails", []) or []
 
                 if not emails:
@@ -167,7 +174,6 @@ def assistant(payload: ParseIntentRequest):
                     message_id = emails[0].get("id")
                     result = read_email_service(provider=provider, message_id=message_id)
 
-            # indexed email, e.g. "email 1"
             elif email_reference in {"indexed", "first"}:
                 index = 1
                 if email_reference == "first":
@@ -178,7 +184,12 @@ def assistant(payload: ParseIntentRequest):
                     except Exception:
                         index = 1
 
-                email_list = list_emails_service(provider=provider, max_results=max(index, 1))
+                email_list = list_emails_service(
+                    provider=provider,
+                    max_results=max(index, 1),
+                    inbox_only=False,
+                    primary_only=True,
+                )
                 emails = email_list.get("emails", []) or []
 
                 if len(emails) < index:
@@ -195,6 +206,96 @@ def assistant(payload: ParseIntentRequest):
                     "status": "needs_clarification",
                     "message": "I can read an email, but I need a clearer reference like 'latest email' or 'email 1'.",
                 }
+
+        # -----------------------
+        # REPLY TO EMAIL (prefer primary)
+        # -----------------------
+        elif action in {"reply_email", "create_reply_draft"}:
+            email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
+            email_index = (decision or {}).get("email_index")
+            if email_index is None:
+                email_index = entities.get("email_index")
+
+            body = (decision or {}).get("body") or entities.get("body_hint") or "Thanks for the update."
+            target_email = None
+
+            if email_reference == "latest":
+                latest_list = list_emails_service(
+                    provider=provider,
+                    max_results=1,
+                    inbox_only=False,
+                    primary_only=True,
+                )
+                emails = latest_list.get("emails", []) or []
+
+                if not emails:
+                    result = {
+                        "status": "not_found",
+                        "message": "No emails found to reply to.",
+                    }
+                else:
+                    message_id = emails[0].get("id")
+                    read_result = read_email_service(provider=provider, message_id=message_id)
+                    target_email = (read_result or {}).get("email") or {}
+
+            elif email_reference in {"indexed", "first"}:
+                index = 1
+                if email_reference == "first":
+                    index = 1
+                elif email_index:
+                    try:
+                        index = max(1, int(email_index))
+                    except Exception:
+                        index = 1
+
+                email_list = list_emails_service(
+                    provider=provider,
+                    max_results=max(index, 1),
+                    inbox_only=False,
+                    primary_only=True,
+                )
+                emails = email_list.get("emails", []) or []
+
+                if len(emails) < index:
+                    result = {
+                        "status": "not_found",
+                        "message": f"I couldn't find email #{index} to reply to.",
+                    }
+                else:
+                    message_id = emails[index - 1].get("id")
+                    read_result = read_email_service(provider=provider, message_id=message_id)
+                    target_email = (read_result or {}).get("email") or {}
+
+            else:
+                result = {
+                    "status": "needs_clarification",
+                    "message": "I can reply to an email, but I need a clearer reference like 'latest email' or 'email 1'.",
+                }
+
+            if result is None and target_email is not None:
+                raw_from = target_email.get("from") or ""
+                to_email = _extract_email_address(raw_from)
+                subject = target_email.get("subject") or "Quick Follow-Up"
+                thread_id = target_email.get("threadId") or ""
+
+                if not to_email:
+                    result = {
+                        "status": "needs_clarification",
+                        "message": "I found the email, but I couldn't extract the sender email address.",
+                    }
+                elif not thread_id:
+                    result = {
+                        "status": "needs_clarification",
+                        "message": "I found the email, but I couldn't extract the thread ID.",
+                    }
+                else:
+                    result = create_gmail_reply_draft_service(
+                        provider=provider,
+                        to=to_email,
+                        subject=subject,
+                        body=str(body),
+                        thread_id=thread_id,
+                    )
 
         # -----------------------
         # CREATE GMAIL DRAFT

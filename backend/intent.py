@@ -203,6 +203,11 @@ def _extract_email_body_hint(text: str) -> Optional[str]:
     if m2:
         return m2.group(1).strip()
 
+    # replying "..."
+    m3 = re.search(r'reply(?:ing)?\s+(?:with|saying)\s+"([^"]+)"', t, re.IGNORECASE)
+    if m3:
+        return m3.group(1).strip()
+
     return None
 
 
@@ -340,8 +345,27 @@ def _looks_like_read_email(text: str) -> bool:
     if any(phrase in t for phrase in phrases):
         return True
 
-    # support "open email 1", "read email 2"
     if re.search(r"\b(open|read)\s+email\s+\d+\b", t):
+        return True
+
+    return False
+
+
+def _looks_like_reply_email(text: str) -> bool:
+    t = (text or "").lower()
+
+    phrases = [
+        "reply to my latest email",
+        "reply to the latest email",
+        "reply to my most recent email",
+        "reply to the first email",
+        "respond to my latest email",
+        "respond to the latest email",
+    ]
+    if any(phrase in t for phrase in phrases):
+        return True
+
+    if re.search(r"\b(reply|respond)\s+to\s+email\s+\d+\b", t):
         return True
 
     return False
@@ -376,6 +400,9 @@ def _classify_intent_rules(text: str) -> str:
     if _looks_like_list_events(t):
         return "list_events"
 
+    if _looks_like_reply_email(t):
+        return "reply_email"
+
     if _looks_like_read_email(t):
         return "read_email"
 
@@ -408,6 +435,12 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
         entities["raw"] = text
         entities["timeframe"] = _extract_timeframe(text)
         entities["duration_min"] = _extract_duration_min(text) or 30
+
+    elif intent == "reply_email":
+        entities["email_reference"] = _extract_email_reference(text) or "latest"
+        entities["email_index"] = _extract_email_index(text)
+        entities["body_hint"] = _extract_email_body_hint(text)
+        entities["tone"] = _extract_tone(text)
 
     elif intent == "read_email":
         entities["email_reference"] = _extract_email_reference(text) or "latest"
@@ -471,6 +504,7 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         "create_event",
         "list_emails",
         "read_email",
+        "reply_email",
         "unknown",
     }
     if intent not in allowed:
@@ -491,6 +525,12 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("tone", _extract_tone(text))
         entities.setdefault("subject", _extract_email_subject(text) or _extract_topic(text))
         entities.setdefault("body_hint", _extract_email_body_hint(text))
+
+    if intent == "reply_email":
+        entities.setdefault("email_reference", _extract_email_reference(text) or "latest")
+        entities.setdefault("email_index", _extract_email_index(text))
+        entities.setdefault("body_hint", _extract_email_body_hint(text))
+        entities.setdefault("tone", _extract_tone(text))
 
     if intent == "follow_up_reminder":
         entities.setdefault("timeframe", _extract_timeframe(text) or "next week")
@@ -528,7 +568,7 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
     system = (
         "You are an intent parser for an executive assistant. "
         "Return ONLY valid JSON with keys: intent, entities. "
-        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, list_events, create_event, list_emails, read_email, unknown. "
+        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, list_events, create_event, list_emails, read_email, reply_email, unknown. "
         "entities should be an object. "
         "If unsure, use intent='unknown' and entities={}. "
         "Do NOT include extra text."

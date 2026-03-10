@@ -144,6 +144,24 @@ def _build_draft_body(entities: Dict[str, Any]) -> str:
     )
 
 
+def _build_reply_body(entities: Dict[str, Any]) -> str:
+    tone = (entities.get("tone") or "neutral").lower()
+    body_hint = (entities.get("body_hint") or "").strip()
+
+    if body_hint:
+        if tone == "friendly":
+            return f"Hi,\n\n{body_hint}\n\nThanks!"
+        if tone == "professional":
+            return f"Hello,\n\n{body_hint}\n\nBest regards,"
+        return body_hint
+
+    if tone == "friendly":
+        return "Hi,\n\nThanks for the update.\n\nThanks!"
+    if tone == "professional":
+        return "Hello,\n\nThank you for the update.\n\nBest regards,"
+    return "Thanks for the update."
+
+
 def handle_intent(intent_data: dict) -> dict:
     intent = (intent_data or {}).get("intent") or "unknown"
     entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
@@ -234,6 +252,24 @@ def handle_intent(intent_data: dict) -> dict:
             "email_reference": email_reference,
             "email_index": email_index,
             "message": "Opening the requested email.",
+        }
+
+    # ---------- EMAIL: REPLY TO EMAIL ----------
+    if intent == "reply_email":
+        email_reference = entities.get("email_reference") or "latest"
+        email_index = entities.get("email_index")
+        tone = entities.get("tone") or "neutral"
+        body = _build_reply_body(entities)
+
+        return {
+            "action": "reply_email",
+            "intent": intent,
+            "provider": DEFAULT_PROVIDER,
+            "email_reference": email_reference,
+            "email_index": email_index,
+            "body": body,
+            "tone": tone,
+            "message": "Preparing a reply draft for the requested email.",
         }
 
     # ---------- MEETING ----------

@@ -1,6 +1,7 @@
 # backend/integrations.py
 
 import os
+import re
 import json
 import secrets
 import base64
@@ -74,6 +75,13 @@ class CreateDraftRequest(BaseModel):
 
 class ReadEmailRequest(BaseModel):
     message_id: str
+
+
+class CreateReplyDraftRequest(BaseModel):
+    to: str
+    subject: str
+    body: str
+    thread_id: str
 
 
 # ===============================
@@ -278,9 +286,8 @@ def _google_api_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
 def _decode_gmail_base64(data: str) -> str:
     if not data:
         return ""
-
     try:
-        padding = '=' * (-len(data) % 4)
+        padding = "=" * (-len(data) % 4)
         decoded = base64.urlsafe_b64decode(data + padding)
         return decoded.decode("utf-8", errors="replace")
     except Exception:
@@ -299,34 +306,28 @@ def _extract_gmail_body(payload: Dict[str, Any]) -> str:
     body = payload.get("body", {}) or {}
     data = body.get("data")
 
-    # direct body
     if data and mime_type in {"text/plain", "text/html"}:
         return _decode_gmail_base64(data)
 
-    # multipart
     parts = payload.get("parts", []) or []
     if parts:
-        # prefer text/plain
         for part in parts:
             if part.get("mimeType") == "text/plain":
                 part_data = (part.get("body", {}) or {}).get("data")
                 if part_data:
                     return _decode_gmail_base64(part_data)
 
-        # then text/html
         for part in parts:
             if part.get("mimeType") == "text/html":
                 part_data = (part.get("body", {}) or {}).get("data")
                 if part_data:
                     return _decode_gmail_base64(part_data)
 
-        # recursive fallback
         for part in parts:
             nested = _extract_gmail_body(part)
             if nested:
                 return nested
 
-    # generic fallback
     if data:
         return _decode_gmail_base64(data)
 
@@ -341,6 +342,33 @@ def _headers_to_map(headers: List[Dict[str, Any]]) -> Dict[str, str]:
         if name and value:
             out[name.lower()] = value
     return out
+
+
+def _extract_email_address(raw_value: Optional[str]) -> str:
+    """
+    Turn '"Name" <email@domain.com>' into 'email@domain.com'
+    """
+    if not raw_value:
+        return ""
+
+    m = re.search(r"<([^>]+)>", raw_value)
+    if m:
+        return m.group(1).strip().lower()
+
+    m2 = re.search(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b", raw_value)
+    if m2:
+        return m2.group(0).strip().lower()
+
+    return raw_value.strip().lower()
+
+
+def _reply_subject(subject: Optional[str]) -> str:
+    s = (subject or "").strip()
+    if not s:
+        return "Re: Quick Follow-Up"
+    if s.lower().startswith("re:"):
+        return s
+    return f"Re: {s}"
 
 
 # ===============================
@@ -491,19 +519,39 @@ def get_freebusy_service(
     }
 
 
-def list_emails_service(provider: str, max_results: int = 10) -> Dict[str, Any]:
+def list_emails_service(
+    provider: str,
+    max_results: int = 10,
+    inbox_only: bool = True,
+    primary_only: bool = False,
+) -> Dict[str, Any]:
     """
     List recent Gmail messages with basic metadata.
+    By default, prefers real inbox mail and excludes drafts/sent/chats.
     """
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
     max_results = max(1, min(int(max_results), 20))
 
+    query_parts = [
+        "-in:drafts",
+        "-in:sent",
+        "-in:chats",
+    ]
+
+    if primary_only:
+        query_parts.append("category:primary")
+    elif inbox_only:
+        query_parts.append("in:inbox")
+
+    gmail_query = " ".join(query_parts).strip()
+
     data = _google_api_get(
         "/gmail/v1/users/me/messages",
         {
             "maxResults": max_results,
+            "q": gmail_query,
         },
     )
 
@@ -519,27 +567,35 @@ def list_emails_service(provider: str, max_results: int = 10) -> Dict[str, Any]:
             f"/gmail/v1/users/me/messages/{msg_id}",
             {
                 "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Date"],
+                "metadataHeaders": ["From", "To", "Subject", "Date"],
             },
         )
 
         headers = (detail.get("payload", {}) or {}).get("headers", []) or []
         header_map = _headers_to_map(headers)
+        label_ids = detail.get("labelIds", []) or []
+
+        # extra safety
+        if "DRAFT" in label_ids or "SENT" in label_ids:
+            continue
 
         emails.append(
             {
                 "id": msg_id,
                 "threadId": detail.get("threadId"),
                 "from": header_map.get("from"),
+                "to": header_map.get("to"),
                 "subject": header_map.get("subject"),
                 "date": header_map.get("date"),
                 "snippet": detail.get("snippet"),
+                "labelIds": label_ids,
             }
         )
 
     return {
         "provider": "google",
         "emails": emails,
+        "query_used": gmail_query,
     }
 
 
@@ -636,6 +692,67 @@ def create_gmail_draft_service(provider: str, to: str, subject: str, body: str) 
     }
 
 
+def create_gmail_reply_draft_service(
+    provider: str,
+    to: str,
+    subject: str,
+    body: str,
+    thread_id: str,
+) -> Dict[str, Any]:
+    """
+    Create a real Gmail reply draft attached to an existing thread.
+    """
+    if provider != "google":
+        raise HTTPException(status_code=400, detail="Only google supported")
+
+    to = (to or "").strip()
+    subject = _reply_subject(subject)
+    body = body or ""
+    thread_id = (thread_id or "").strip()
+
+    if not to:
+        raise HTTPException(status_code=400, detail="Missing reply recipient email.")
+    if not thread_id:
+        raise HTTPException(status_code=400, detail="Missing thread_id for reply draft.")
+
+    raw_message = (
+        f"To: {to}\r\n"
+        f"Subject: {subject}\r\n"
+        "Content-Type: text/plain; charset=UTF-8\r\n"
+        "\r\n"
+        f"{body}"
+    )
+
+    encoded_message = base64.urlsafe_b64encode(raw_message.encode("utf-8")).decode("utf-8")
+
+    created = _google_api_post(
+        "/gmail/v1/users/me/drafts",
+        {
+            "message": {
+                "raw": encoded_message,
+                "threadId": thread_id,
+            }
+        },
+    )
+
+    draft = created.get("message", {}) or {}
+
+    return {
+        "status": "reply_draft_created",
+        "draft": {
+            "id": created.get("id"),
+            "messageId": draft.get("id"),
+            "threadId": draft.get("threadId"),
+            "labelIds": draft.get("labelIds", []),
+        },
+        "email": {
+            "to": to,
+            "subject": subject,
+            "body": body,
+        },
+    }
+
+
 # ===============================
 # ENDPOINTS
 # ===============================
@@ -706,8 +823,17 @@ def freebusy(payload: FreeBusyRequest):
 
 
 @router.get("/google/list-emails")
-def list_emails(max_results: int = 10):
-    return list_emails_service("google", max_results)
+def list_emails(
+    max_results: int = 10,
+    inbox_only: bool = True,
+    primary_only: bool = False,
+):
+    return list_emails_service(
+        "google",
+        max_results=max_results,
+        inbox_only=inbox_only,
+        primary_only=primary_only,
+    )
 
 
 @router.get("/google/read-email/{message_id}")
@@ -722,4 +848,15 @@ def create_draft(payload: CreateDraftRequest):
         payload.to,
         payload.subject,
         payload.body,
+    )
+
+
+@router.post("/google/create-reply-draft")
+def create_reply_draft(payload: CreateReplyDraftRequest):
+    return create_gmail_reply_draft_service(
+        "google",
+        payload.to,
+        payload.subject,
+        payload.body,
+        payload.thread_id,
     )
