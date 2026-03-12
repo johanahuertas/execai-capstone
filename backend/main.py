@@ -1,4 +1,5 @@
 # backend/main.py
+
 from datetime import datetime, timedelta
 from typing import Optional, Any, Dict, List
 
@@ -8,7 +9,6 @@ from pydantic import BaseModel
 from .intent import parse_intent as parse_intent_ai
 from .orchestrator import handle_intent
 from .integrations import router as integrations_router
-
 from .integrations import (
     list_events_service,
     create_event_service,
@@ -26,6 +26,7 @@ app.include_router(integrations_router)
 # -----------------------
 # MODELS
 # -----------------------
+
 class ParseIntentRequest(BaseModel):
     text: str
 
@@ -47,16 +48,21 @@ class DraftEmailRequest(BaseModel):
 # -----------------------
 # HELPERS
 # -----------------------
+
 def _dedupe_keep_order(items: List[str]) -> List[str]:
     seen = set()
     out: List[str] = []
+
     for item in items or []:
         val = str(item).strip()
         key = val.lower()
+
         if not val or key in seen:
             continue
+
         seen.add(key)
         out.append(val)
+
     return out
 
 
@@ -65,10 +71,7 @@ def _resolve_target_email(
     email_reference: str,
     email_index: Optional[int],
 ) -> Optional[Dict[str, Any]]:
-    """
-    Resolve the requested email into a fully-read Gmail message.
-    Prefer primary inbox so 'latest email' is not usually a promo.
-    """
+
     if email_reference == "latest":
         latest_list = list_emails_service(
             provider=provider,
@@ -89,6 +92,7 @@ def _resolve_target_email(
 
     if email_reference in {"indexed", "first"}:
         index = 1
+
         if email_reference == "first":
             index = 1
         elif email_index:
@@ -121,6 +125,7 @@ def _resolve_target_email(
 # -----------------------
 # BASIC ROUTES
 # -----------------------
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -137,15 +142,9 @@ def parse_intent_endpoint(payload: ParseIntentRequest):
 # -----------------------
 # MAIN ASSISTANT
 # -----------------------
+
 @app.post("/assistant")
 def assistant(payload: ParseIntentRequest):
-    """
-    Main agent entry point:
-    1) Parse intent
-    2) Build decision
-    3) Execute integration if needed
-    4) Return intent_data + decision + result
-    """
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
@@ -168,9 +167,6 @@ def assistant(payload: ParseIntentRequest):
     result = None
 
     try:
-        # -----------------------
-        # LIST EVENTS
-        # -----------------------
         if action in {"list_events", "calendar_list", "get_events"}:
             days = (decision or {}).get("days")
             if days is None:
@@ -181,9 +177,6 @@ def assistant(payload: ParseIntentRequest):
                 days=int(days),
             )
 
-        # -----------------------
-        # CREATE EVENT
-        # -----------------------
         elif action in {"create_event", "calendar_create", "schedule_event"}:
             title = (decision or {}).get("title") or entities.get("title")
             start = (decision or {}).get("start") or entities.get("start")
@@ -228,9 +221,6 @@ def assistant(payload: ParseIntentRequest):
                     attendees=attendee_emails,
                 )
 
-        # -----------------------
-        # LIST EMAILS
-        # -----------------------
         elif action in {"list_emails", "get_emails", "show_inbox"}:
             max_results = (decision or {}).get("max_results")
             if max_results is None:
@@ -243,9 +233,6 @@ def assistant(payload: ParseIntentRequest):
                 primary_only=False,
             )
 
-        # -----------------------
-        # READ EMAIL
-        # -----------------------
         elif action in {"read_email", "open_email"}:
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
             email_index = (decision or {}).get("email_index")
@@ -269,9 +256,6 @@ def assistant(payload: ParseIntentRequest):
                     "email": target_email,
                 }
 
-        # -----------------------
-        # CREATE DRAFT
-        # -----------------------
         elif action in {"create_draft", "draft_email"}:
             recipient = (decision or {}).get("recipient") or entities.get("recipient")
             subject = (decision or {}).get("subject") or entities.get("subject") or "Quick Follow-Up"
@@ -299,9 +283,6 @@ def assistant(payload: ParseIntentRequest):
                     body=str(body),
                 )
 
-        # -----------------------
-        # REPLY EMAIL
-        # -----------------------
         elif action in {"reply_email", "create_reply_draft"}:
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
             email_index = (decision or {}).get("email_index")
@@ -346,9 +327,6 @@ def assistant(payload: ParseIntentRequest):
                         thread_id=thread_id,
                     )
 
-        # -----------------------
-        # REPLY + CREATE EVENT
-        # -----------------------
         elif action in {"reply_and_create_event"}:
             email_reference = entities.get("email_reference") or "latest"
             email_index = entities.get("email_index")
@@ -446,9 +424,6 @@ def assistant(payload: ParseIntentRequest):
                             "message": "Reply draft and calendar event created successfully.",
                         }
 
-        # -----------------------
-        # UNKNOWN
-        # -----------------------
         else:
             result = {
                 "status": "unsupported_action",
@@ -476,8 +451,9 @@ def assistant(payload: ParseIntentRequest):
 
 
 # -----------------------
-# LEGACY / MOCK ENDPOINTS
+# LEGACY ROUTES
 # -----------------------
+
 @app.post("/suggest-times")
 def suggest_times(payload: ParseIntentRequest):
     text = (payload.text or "").strip()
@@ -490,6 +466,7 @@ def suggest_times(payload: ParseIntentRequest):
         {"label": "Option B", "start": (now + timedelta(days=2, hours=14)).isoformat(), "duration_min": 30},
         {"label": "Option C", "start": (now + timedelta(days=3, hours=9)).isoformat(), "duration_min": 30},
     ]
+
     return {
         "intent": "meeting_scheduling",
         "options": options,

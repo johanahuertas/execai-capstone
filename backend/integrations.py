@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 import zoneinfo
 
-# Option 1: load .env (but don't crash if python-dotenv isn't installed)
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
@@ -39,10 +38,10 @@ GOOGLE_SCOPES = [
 
 DEFAULT_TZ = zoneinfo.ZoneInfo("America/New_York")
 
-# ===============================
-# MODELS
-# ===============================
 
+# -----------------------
+# MODELS
+# -----------------------
 
 class ListEventsRequest(BaseModel):
     days: int = 7
@@ -50,7 +49,7 @@ class ListEventsRequest(BaseModel):
 
 class CreateEventRequest(BaseModel):
     title: str
-    start: str  # ISO datetime
+    start: str
     duration_min: int = 30
     attendees: List[str] = []
     description: str = ""
@@ -58,8 +57,8 @@ class CreateEventRequest(BaseModel):
 
 
 class FreeBusyRequest(BaseModel):
-    time_min: str  # ISO datetime — start of window
-    time_max: str  # ISO datetime — end of window
+    time_min: str
+    time_max: str
     calendar_ids: List[str] = ["primary"]
 
 
@@ -84,10 +83,9 @@ class CreateReplyDraftRequest(BaseModel):
     thread_id: str
 
 
-# ===============================
-# GOOGLE OAUTH HELPERS
-# ===============================
-
+# -----------------------
+# GOOGLE OAUTH
+# -----------------------
 
 def _google_config(required: bool = True) -> Dict[str, str]:
     cid = os.getenv("GOOGLE_CLIENT_ID", "").strip()
@@ -135,6 +133,7 @@ def _save_google_token(token: Dict[str, Any]) -> None:
 def _load_google_token() -> Optional[Dict[str, Any]]:
     if not GOOGLE_TOKEN_PATH.exists():
         return None
+
     try:
         return json.loads(GOOGLE_TOKEN_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -151,10 +150,6 @@ def _can_refresh(token: Dict[str, Any]) -> bool:
 
 
 def _refresh_google_token(token: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Refresh ONLY when we actually need it (after a 401),
-    and only if env vars + refresh_token exist.
-    """
     refresh_token = token.get("refresh_token")
     if not refresh_token:
         raise HTTPException(
@@ -186,14 +181,11 @@ def _refresh_google_token(token: Dict[str, Any]) -> Dict[str, Any]:
     refreshed = r.json()
     refreshed["refresh_token"] = refresh_token
     _save_google_token(refreshed)
+
     return refreshed
 
 
 def _get_google_access_token() -> str:
-    """
-    IMPORTANT: Do NOT require env vars for normal usage.
-    Just return the saved access token. Refresh happens only on 401.
-    """
     token = _load_google_token()
     if not token:
         raise HTTPException(status_code=400, detail="Google not connected.")
@@ -205,10 +197,9 @@ def _get_google_access_token() -> str:
     return access
 
 
-# ===============================
-# GOOGLE API CALLS (retry on 401)
-# ===============================
-
+# -----------------------
+# GOOGLE API
+# -----------------------
 
 def _google_api_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     url = f"https://www.googleapis.com{path}"
@@ -278,14 +269,14 @@ def _google_api_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return r.json()
 
 
-# ===============================
-# GMAIL BODY HELPERS
-# ===============================
-
+# -----------------------
+# GMAIL HELPERS
+# -----------------------
 
 def _decode_gmail_base64(data: str) -> str:
     if not data:
         return ""
+
     try:
         padding = "=" * (-len(data) % 4)
         decoded = base64.urlsafe_b64decode(data + padding)
@@ -295,10 +286,6 @@ def _decode_gmail_base64(data: str) -> str:
 
 
 def _extract_gmail_body(payload: Dict[str, Any]) -> str:
-    """
-    Try to extract the best readable body from a Gmail message payload.
-    Prefers text/plain, then text/html, then body.data fallback.
-    """
     if not payload:
         return ""
 
@@ -336,18 +323,17 @@ def _extract_gmail_body(payload: Dict[str, Any]) -> str:
 
 def _headers_to_map(headers: List[Dict[str, Any]]) -> Dict[str, str]:
     out: Dict[str, str] = {}
+
     for h in headers or []:
         name = h.get("name")
         value = h.get("value")
         if name and value:
             out[name.lower()] = value
+
     return out
 
 
 def _extract_email_address(raw_value: Optional[str]) -> str:
-    """
-    Turn '"Name" <email@domain.com>' into 'email@domain.com'
-    """
     if not raw_value:
         return ""
 
@@ -371,10 +357,9 @@ def _reply_subject(subject: Optional[str]) -> str:
     return f"Re: {s}"
 
 
-# ===============================
+# -----------------------
 # SERVICES
-# ===============================
-
+# -----------------------
 
 def list_events_service(provider: str, days: int = 7) -> Dict[str, Any]:
     if provider != "google":
@@ -479,9 +464,6 @@ def get_freebusy_service(
     time_max: str,
     calendar_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """
-    Query Google Calendar FreeBusy API to find busy time blocks.
-    """
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
@@ -499,6 +481,7 @@ def get_freebusy_service(
 
     busy_blocks: List[Dict[str, str]] = []
     calendars = data.get("calendars", {})
+
     for cal_id in calendar_ids:
         cal_data = calendars.get(cal_id, {})
         for block in cal_data.get("busy", []):
@@ -525,10 +508,6 @@ def list_emails_service(
     inbox_only: bool = True,
     primary_only: bool = False,
 ) -> Dict[str, Any]:
-    """
-    List recent Gmail messages with basic metadata.
-    By default, prefers real inbox mail and excludes drafts/sent/chats.
-    """
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
@@ -575,7 +554,6 @@ def list_emails_service(
         header_map = _headers_to_map(headers)
         label_ids = detail.get("labelIds", []) or []
 
-        # extra safety
         if "DRAFT" in label_ids or "SENT" in label_ids:
             continue
 
@@ -600,9 +578,6 @@ def list_emails_service(
 
 
 def read_email_service(provider: str, message_id: str) -> Dict[str, Any]:
-    """
-    Read a full Gmail message including headers + decoded body.
-    """
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
@@ -640,9 +615,6 @@ def read_email_service(provider: str, message_id: str) -> Dict[str, Any]:
 
 
 def create_gmail_draft_service(provider: str, to: str, subject: str, body: str) -> Dict[str, Any]:
-    """
-    Create a real Gmail draft.
-    """
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
@@ -699,9 +671,6 @@ def create_gmail_reply_draft_service(
     body: str,
     thread_id: str,
 ) -> Dict[str, Any]:
-    """
-    Create a real Gmail reply draft attached to an existing thread.
-    """
     if provider != "google":
         raise HTTPException(status_code=400, detail="Only google supported")
 
@@ -753,10 +722,9 @@ def create_gmail_reply_draft_service(
     }
 
 
-# ===============================
+# -----------------------
 # ENDPOINTS
-# ===============================
-
+# -----------------------
 
 @router.get("/status")
 def status():

@@ -1,4 +1,5 @@
 # frontend/app.py
+
 import re
 import html
 import requests
@@ -7,18 +8,22 @@ from datetime import datetime
 
 API_BASE = "http://127.0.0.1:8000"
 
+
 # -----------------------
 # PAGE SETUP
 # -----------------------
+
 st.set_page_config(
     page_title="ExecAI",
     page_icon="🤖",
     layout="wide",
 )
 
+
 # -----------------------
 # CUSTOM STYLES
 # -----------------------
+
 st.markdown(
     """
     <style>
@@ -92,9 +97,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # -----------------------
 # SESSION STATE
 # -----------------------
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -105,12 +112,15 @@ if "debug_last" not in st.session_state:
         "result": None,
     }
 
+
 # -----------------------
 # HELPERS
 # -----------------------
+
 def format_datetime(value: str) -> str:
     if not value:
         return ""
+
     try:
         return datetime.fromisoformat(value).strftime("%a, %b %d · %I:%M %p")
     except Exception:
@@ -322,6 +332,10 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
         st.rerun()
 
 
+# -----------------------
+# RENDER HELPERS
+# -----------------------
+
 def render_event_list(result: dict):
     events = result.get("events", []) or []
 
@@ -398,12 +412,14 @@ def render_email_list(result: dict):
         st.markdown('<div class="pill">Gmail</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card-title">{subject}</div>', unsafe_allow_html=True)
         st.markdown(f"**From:** {sender}")
+
         if email_data.get("to"):
             st.markdown(f"**To:** {email_data.get('to')}")
         if date_value:
             st.markdown(f"**Date:** {date_value}")
         if snippet:
             st.markdown(f'<div class="muted">{snippet}</div>', unsafe_allow_html=True)
+
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -422,17 +438,24 @@ def render_read_email(result: dict):
     st.markdown('<div class="pill">Gmail Message</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="card-title">{subject}</div>', unsafe_allow_html=True)
     st.markdown(f"**From:** {sender}")
+
     if to_val:
         st.markdown(f"**To:** {to_val}")
     if date_val:
         st.markdown(f"**Date:** {date_val}")
     if snippet:
         st.markdown(f"**Snippet:** {snippet}")
-
     if email_data.get("threadId"):
         st.markdown(f"**Thread ID:** `{email_data.get('threadId')}`")
 
-    st.text_area("Email body", value=body, height=320, disabled=True, key=f"read_body_{email_data.get('id', 'x')}")
+    st.text_area(
+        "Email body",
+        value=body,
+        height=320,
+        disabled=True,
+        key=f"read_body_{email_data.get('id', 'x')}",
+    )
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -445,6 +468,7 @@ def render_created_draft(result: dict):
     st.markdown('<div class="pill">Gmail Draft</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email_data.get('to', '')}")
     st.markdown(f"**Subject:** {email_data.get('subject', '')}")
+
     st.text_area(
         "Draft body",
         value=email_data.get("body", ""),
@@ -471,6 +495,7 @@ def render_reply_draft(result: dict):
     st.markdown('<div class="pill">Gmail Reply Draft</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email_data.get('to', '')}")
     st.markdown(f"**Subject:** {email_data.get('subject', '')}")
+
     st.text_area(
         "Reply body",
         value=email_data.get("body", ""),
@@ -525,7 +550,11 @@ def render_meeting_options(decision: dict):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_conflicts_from_list(conflicts: list, title_text: str = "⚠️ Conflicts found", warning_text: str = "Conflict detected."):
+def render_conflicts_from_list(
+    conflicts: list,
+    title_text: str = "⚠️ Conflicts found",
+    warning_text: str = "Conflict detected.",
+):
     st.markdown(f'<div class="section-title">{title_text}</div>', unsafe_allow_html=True)
     st.warning(warning_text)
 
@@ -591,12 +620,14 @@ def render_proposed_event(proposed: dict):
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="pill">Not created</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="card-title">{proposed.get("title", "(No title)")}</div>', unsafe_allow_html=True)
+
     if proposed.get("start"):
         st.markdown(f"**Start:** {format_datetime(proposed.get('start'))}")
     if proposed.get("duration_min"):
         st.markdown(f"**Duration:** {proposed.get('duration_min')} minutes")
     if proposed.get("attendee_emails"):
         st.markdown("**Attendees:** " + ", ".join(proposed.get("attendee_emails")))
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -604,12 +635,15 @@ def render_needs_clarification(result: dict):
     st.markdown('<div class="section-title">❓ More info needed</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.warning(result.get("message", "I need a bit more information."))
+
     missing = result.get("missing", []) or []
     if missing:
         st.markdown("**Missing:** " + ", ".join(missing))
+
     example = result.get("example")
     if example:
         st.markdown(f"**Example:** `{example}`")
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -630,6 +664,7 @@ def render_reply_and_create_event(result: dict):
             render_reply_draft(reply_result)
         if calendar_result and calendar_result.get("status") == "created":
             render_created_event(calendar_result)
+
         return
 
     if status == "partial_success":
@@ -657,6 +692,7 @@ def render_reply_and_create_event(result: dict):
             render_needs_clarification(calendar_result)
         elif cal_status == "created":
             render_created_event(calendar_result)
+
         return
 
     if status == "not_found":
@@ -763,6 +799,7 @@ def render_assistant_result(decision: dict, result):
 # -----------------------
 # SIDEBAR
 # -----------------------
+
 with st.sidebar:
     st.markdown("## ExecAI")
     st.markdown(
@@ -818,18 +855,22 @@ with st.sidebar:
 
     show_debug = st.toggle("Show debug", value=False)
 
+
 # -----------------------
 # HEADER
 # -----------------------
+
 st.markdown('<div class="main-title">ExecAI</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="subtitle">A lightweight executive assistant MVP with real Google Calendar and Gmail integrations.</div>',
     unsafe_allow_html=True,
 )
 
+
 # -----------------------
 # CHAT HISTORY
 # -----------------------
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "user":
@@ -839,9 +880,11 @@ for msg in st.session_state.messages:
             result = msg.get("result")
             render_assistant_result(decision, result)
 
+
 # -----------------------
 # EMPTY STATE
 # -----------------------
+
 if not st.session_state.messages:
     st.markdown(
         """
@@ -862,9 +905,11 @@ if not st.session_state.messages:
         unsafe_allow_html=True,
     )
 
+
 # -----------------------
 # CHAT INPUT
 # -----------------------
+
 prompt = st.chat_input("Ask ExecAI something...")
 
 if prompt:
@@ -923,7 +968,6 @@ if prompt:
                         }
 
                 render_assistant_result(decision, result)
-
                 append_assistant_message(decision, result)
 
             except Exception as e:
@@ -933,18 +977,23 @@ if prompt:
                     {"status": "error", "detail": str(e)},
                 )
 
+
 # -----------------------
 # DEBUG PANEL
 # -----------------------
+
 if show_debug:
     with st.expander("Debug (Intent + Decision + Result)", expanded=False):
         dbg = st.session_state.debug_last or {}
+
         if dbg.get("intent_data") is not None:
             st.markdown("### Detected intent")
             st.json(dbg["intent_data"])
+
         if dbg.get("decision") is not None:
             st.markdown("### Decision / Orchestration")
             st.json(dbg["decision"])
+
         if dbg.get("result") is not None:
             st.markdown("### Result")
             st.json(dbg["result"])

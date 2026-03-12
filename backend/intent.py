@@ -1,12 +1,10 @@
 # backend/intent.py
+
 import os
 import re
 import json
 from typing import Any, Dict, Optional, List
 
-# -----------------------
-# OPTIONAL OpenAI (LLM)
-# -----------------------
 USE_LLM = bool(os.getenv("OPENAI_API_KEY"))
 
 _client = None
@@ -19,22 +17,24 @@ if USE_LLM:
         _client = None
         USE_LLM = False
 
-
-# -----------------------
-# RULE-BASED HELPERS
-# -----------------------
 EMAIL_REGEX = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
 
+
+# -----------------------
+# EXTRACTION HELPERS
+# -----------------------
 
 def _dedupe_keep_order(items: List[str]) -> List[str]:
     seen = set()
     out: List[str] = []
+
     for item in items:
         key = item.strip().lower()
         if not key or key in seen:
             continue
         seen.add(key)
         out.append(item.strip())
+
     return out
 
 
@@ -58,7 +58,6 @@ def _extract_participants(text: str) -> Optional[int]:
     if "both of us" in t or "the two of us" in t:
         return 2
 
-    # explicit people count only
     m_people = re.search(r"\b(\d+)\s+(people|persons|attendees|guests|participants)\b", t)
     if m_people:
         try:
@@ -80,6 +79,7 @@ def _extract_participants(text: str) -> Optional[int]:
         "nine": 9,
         "ten": 10,
     }
+
     for w, n in word_map.items():
         if re.search(rf"\b{w}\s+(people|persons|attendees|guests|participants)\b", t):
             return n
@@ -114,10 +114,12 @@ def _extract_timeframe(text: str) -> Optional[str]:
 
 def _extract_meeting_type(text: str) -> str:
     t = (text or "").lower()
+
     if any(w in t for w in ["zoom", "teams", "call", "phone call"]):
         return "call"
     if any(w in t for w in ["meeting", "meet", "sync", "catch up"]):
         return "meeting"
+
     return "unknown"
 
 
@@ -146,10 +148,12 @@ def _extract_duration_min(text: str) -> Optional[int]:
 
 def _extract_tone(text: str) -> str:
     t = (text or "").lower()
+
     if any(w in t for w in ["professional", "formally", "formal"]):
         return "professional"
     if any(w in t for w in ["friendly", "casual"]):
         return "friendly"
+
     return "neutral"
 
 
@@ -302,7 +306,6 @@ def _extract_event_title(text: str) -> Optional[str]:
         if candidate:
             return candidate[:120]
 
-    # handle "schedule a budget review ..."
     m3 = re.search(
         r"\b(?:create|schedule|add|book|make)\s+(?:an?\s+)?(.+)",
         t,
@@ -310,14 +313,8 @@ def _extract_event_title(text: str) -> Optional[str]:
     )
     if m3:
         candidate = m3.group(1).strip().strip('"').strip("'")
-
-        # remove leading generic nouns only if present
         candidate = re.sub(r"^(event|meeting|appointment)\b", "", candidate, flags=re.IGNORECASE).strip()
-
-        # cut attendee section
         candidate = re.split(r"\bwith\b", candidate, maxsplit=1, flags=re.IGNORECASE)[0].strip()
-
-        # cut time/date section
         candidate = re.split(
             r"\b(tomorrow|today|next week|this week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|for\s+\d+\s*(?:min|mins|minute|minutes))\b",
             candidate,
@@ -348,12 +345,14 @@ def _extract_start_hint(text: str) -> Optional[str]:
         return timeframe
     if time_str:
         return time_str
+
     return None
 
 
 # -----------------------
 # CALENDAR HELPERS
 # -----------------------
+
 def _has_word(t: str, word: str) -> bool:
     return re.search(rf"\b{re.escape(word)}\b", t) is not None
 
@@ -422,13 +421,13 @@ def _looks_like_create_event(text: str) -> bool:
     has_called = _has_word(t, "called")
     has_calendar_word = any(_has_word(t, w) for w in ["event", "meeting", "appointment", "calendar"])
 
-    # allow "schedule a budget review tomorrow at 3pm"
     return has_action and (has_calendar_word or has_time_context or has_called or has_attendee)
 
 
 # -----------------------
 # EMAIL HELPERS
 # -----------------------
+
 def _looks_like_list_emails(text: str) -> bool:
     t = (text or "").lower()
 
@@ -536,8 +535,9 @@ def _looks_like_email_drafting(text: str) -> bool:
 
 
 # -----------------------
-# RULE-BASED CLASSIFIER
+# RULE-BASED PARSER
 # -----------------------
+
 def _classify_intent_rules(text: str) -> str:
     t = (text or "").lower()
 
@@ -645,8 +645,9 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
 
 
 # -----------------------
-# LLM PARSER (OPTIONAL)
+# LLM PARSER
 # -----------------------
+
 def _safe_json_load(s: str) -> Optional[dict]:
     try:
         return json.loads(s)
@@ -676,6 +677,7 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         "reply_and_create_event",
         "unknown",
     }
+
     if intent not in allowed:
         intent = "unknown"
 
@@ -780,8 +782,9 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
 
 
 # -----------------------
-# PUBLIC FUNCTION
+# PUBLIC API
 # -----------------------
+
 def parse_intent(text: str) -> Dict[str, Any]:
     text = (text or "").strip()
 

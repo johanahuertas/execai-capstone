@@ -1,10 +1,10 @@
 # backend/orchestrator.py
+
 from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple, List
-
 from zoneinfo import ZoneInfo
 
 from .availability import (
@@ -20,6 +20,10 @@ DEFAULT_PROVIDER = "google"
 DEFAULT_TZ = ZoneInfo("America/New_York")
 
 
+# -----------------------
+# HELPERS
+# -----------------------
+
 def _safe_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -30,13 +34,17 @@ def _safe_int(value: Any, default: int) -> int:
 def _dedupe_keep_order(items: List[str]) -> List[str]:
     seen = set()
     out: List[str] = []
+
     for item in items or []:
         val = str(item).strip()
         key = val.lower()
+
         if not val or key in seen:
             continue
+
         seen.add(key)
         out.append(val)
+
     return out
 
 
@@ -189,14 +197,12 @@ def _suggest_alternative_slots(
     tz: ZoneInfo,
     max_options: int = 3,
 ) -> List[Dict[str, Any]]:
-    """
-    Suggest a few alternative free slots near the requested window.
-    """
     try:
         search_start, search_end = timeframe_to_range(timeframe, tz)
 
         if start_dt < search_start:
             search_start = start_dt.replace(hour=8, minute=0, second=0, microsecond=0)
+
         if start_dt + timedelta(hours=8) > search_end:
             search_end = max(search_end, start_dt.replace(hour=18, minute=0, second=0, microsecond=0))
 
@@ -223,6 +229,7 @@ def _suggest_alternative_slots(
             slot_start_raw = slot.get("start")
             if not slot_start_raw:
                 continue
+
             try:
                 slot_start = datetime.fromisoformat(slot_start_raw)
             except Exception:
@@ -276,9 +283,8 @@ def _build_create_event_decision(intent: str, entities: Dict[str, Any], original
     }
 
     if conflicts:
-        conflict_strs = [
-            f"{c['title']} ({c['start']} – {c['end']})" for c in conflicts
-        ]
+        conflict_strs = [f"{c['title']} ({c['start']} – {c['end']})" for c in conflicts]
+
         alternatives = _suggest_alternative_slots(
             timeframe=timeframe,
             start_dt=start_dt,
@@ -295,10 +301,12 @@ def _build_create_event_decision(intent: str, entities: Dict[str, Any], original
             + ", ".join(conflict_strs)
             + "."
         )
+
         if alternatives:
             result["message"] += " I found alternative times you can use instead."
         else:
             result["message"] += " I could not find alternative times yet."
+
     else:
         result["has_conflicts"] = False
         result["alternatives"] = []
@@ -307,15 +315,19 @@ def _build_create_event_decision(intent: str, entities: Dict[str, Any], original
     return result
 
 
+# -----------------------
+# MAIN ORCHESTRATION
+# -----------------------
+
 def handle_intent(intent_data: dict) -> dict:
     intent = (intent_data or {}).get("intent") or "unknown"
     entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
     original_text = (intent_data or {}).get("original_text") or ""
 
-    # ---------- CALENDAR: LIST EVENTS ----------
     if intent == "list_events":
         days = _safe_int(entities.get("days", 7), 7)
         days = max(1, min(days, 31))
+
         return {
             "action": "list_events",
             "intent": intent,
@@ -324,14 +336,13 @@ def handle_intent(intent_data: dict) -> dict:
             "message": f"Here are your events for the next {days} days.",
         }
 
-    # ---------- CALENDAR: CREATE EVENT ----------
     if intent == "create_event":
         return _build_create_event_decision(intent, entities, original_text)
 
-    # ---------- EMAIL: LIST EMAILS ----------
     if intent == "list_emails":
         max_results = _safe_int(entities.get("max_results", 5), 5)
         max_results = max(1, min(max_results, 20))
+
         return {
             "action": "list_emails",
             "intent": intent,
@@ -340,7 +351,6 @@ def handle_intent(intent_data: dict) -> dict:
             "message": f"Here are your latest {max_results} emails.",
         }
 
-    # ---------- EMAIL: READ EMAIL ----------
     if intent == "read_email":
         email_reference = entities.get("email_reference") or "latest"
         email_index = entities.get("email_index")
@@ -354,7 +364,6 @@ def handle_intent(intent_data: dict) -> dict:
             "message": "Opening the requested email.",
         }
 
-    # ---------- EMAIL: REPLY TO EMAIL ----------
     if intent == "reply_email":
         email_reference = entities.get("email_reference") or "latest"
         email_index = entities.get("email_index")
@@ -372,7 +381,6 @@ def handle_intent(intent_data: dict) -> dict:
             "message": "Preparing a reply draft for the requested email.",
         }
 
-    # ---------- EMAIL + CALENDAR: REPLY AND CREATE EVENT ----------
     if intent == "reply_and_create_event":
         email_reference = entities.get("email_reference") or "latest"
         email_index = entities.get("email_index")
@@ -401,7 +409,6 @@ def handle_intent(intent_data: dict) -> dict:
             "message": "Preparing a reply draft and calendar event.",
         }
 
-    # ---------- MEETING ----------
     if intent == "meeting_scheduling":
         timeframe = (entities.get("timeframe") or "").strip() or None
         duration_min = _safe_int(entities.get("duration_min", 30), 30)
@@ -488,7 +495,6 @@ def handle_intent(intent_data: dict) -> dict:
                 ),
             }
 
-    # ---------- EMAIL: CREATE DRAFT ----------
     if intent == "email_drafting":
         recipient = entities.get("recipient")
         subject = entities.get("subject") or entities.get("topic") or "Quick Follow-Up"
@@ -516,7 +522,6 @@ def handle_intent(intent_data: dict) -> dict:
             "message": "Creating Gmail draft.",
         }
 
-    # ---------- FOLLOW-UP ----------
     if intent == "follow_up_reminder":
         return {
             "action": "suggest_follow_up",
@@ -524,7 +529,6 @@ def handle_intent(intent_data: dict) -> dict:
             "message": "Follow-up flow planned (mock).",
         }
 
-    # ---------- FALLBACK ----------
     return {
         "action": "unknown",
         "intent": "unknown",
