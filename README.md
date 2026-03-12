@@ -1,124 +1,197 @@
-# ExecAI – Executive Assistant (MVP)
+# ExecAI -- Executive Assistant (MVP)
 
-ExecAI is an end-to-end intelligent assistant that interprets natural language
-requests and autonomously plans and executes common executive tasks such as
-scheduling meetings or drafting professional emails.
+ExecAI is an end-to-end intelligent assistant that interprets natural
+language requests and coordinates common executive tasks such as
+scheduling meetings and drafting professional emails.
 
-This project focuses on **agent architecture, intent understanding, and orchestration**
-rather than full production integrations.
+The project focuses on the architecture of intelligent assistants,
+particularly intent detection, orchestration logic, and integration with
+external services. Rather than emphasizing complex machine learning
+models, the system highlights clear system design and reliable task
+execution.
 
----
+------------------------------------------------------------------------
 
-## 🚀 What ExecAI Does
+## Overview
 
-Users can type requests such as:
+ExecAI allows a user to interact with an assistant through natural
+language. The assistant interprets the request, extracts structured
+information, determines the appropriate action, and executes the task
+through integrated services.
 
-- “Find a time for all four of us to meet tomorrow”
-- “Email Sarah the invoice professionally”
-- “Remind me to follow up next week”
+Example requests include:
 
-ExecAI then:
-1. Detects the user’s intent using hybrid NLP
-2. Extracts structured entities (participants, timeframe, topic, tone, etc.)
-3. Decides the appropriate action via an orchestrator
-4. Executes the action using mock workflows
-5. Returns transparent results to the UI
+-   Find a time for all four of us to meet tomorrow
+-   Email Sarah the invoice professionally
+-   Reply to my latest email and schedule a meeting
+-   Show my calendar for next week
 
----
+The assistant processes each request through several stages:
 
-## 🧠 Architecture Overview
+1.  Intent detection and entity extraction
+2.  Decision making through an orchestration layer
+3.  Execution through the appropriate service integration
+4.  Returning structured results to the user interface
 
-### Hybrid NLP (AI-Optional by Design)
-- **Rule-based NLP** (always available, free, deterministic)
-- **Optional OpenAI LLM** for advanced intent parsing
-- Automatic fallback if AI is unavailable (quota, billing, auth, network)
+------------------------------------------------------------------------
 
-This ensures the assistant **always works**, even without paid AI services.
+## System Architecture
 
-### Core Components
-- **Frontend**: Streamlit UI
-- **Backend**: FastAPI
-- **Intent Parser**: Hybrid (rules + optional LLM)
-- **Orchestrator**: Decides next action based on intent
-- **Action Handlers**: Mock email & calendar workflows
+The system is composed of a lightweight client interface and a backend
+service responsible for interpreting requests and coordinating actions.
 
----
+![ExecAI Architecture](docs/execai_system_architecture.png)
 
-## 🔁 Example Flow
+### Frontend
 
-User Input
-↓
-Hybrid NLP (Intent + Entities)
-↓
-Orchestrator Decision
-↓
-Mock Action (Email / Calendar)
-↓
-Result Returned to UI
+The frontend is implemented using Streamlit. It provides a
+conversational interface that allows users to submit requests and view
+results returned from the assistant. The interface also includes an
+optional debugging panel that displays internal reasoning such as
+detected intents and decisions.
 
----
+### Backend
 
-## 📬 Supported Intents (MVP)
+The backend is implemented with FastAPI and is responsible for
+coordinating all assistant operations. It exposes an API endpoint that
+receives user requests and routes them through the assistant workflow.
 
-- `meeting_scheduling`
-- `email_drafting`
-- `follow_up_reminder`
-- `unknown` (safe fallback)
+### Intent Parser
 
----
+The intent parser analyzes user input and determines the user's goal. It
+extracts structured information such as participants, timeframes,
+topics, and tone for email drafts.
 
-## 🧪 Mock Integrations (Intentional)
+### Orchestrator
 
-Calendar and email actions are **mocked** to simulate:
-- Meeting availability suggestions
-- Event creation
-- Email draft generation
+The orchestrator acts as the decision engine of the assistant. Based on
+the detected intent and extracted entities, it determines which actions
+must be executed and which integrations should be invoked.
 
-### Why Mock?
-OAuth-based integrations (Google Workspace, Microsoft Graph) are intentionally
-out of scope for this MVP in order to focus on:
-- Secure agent design
-- Decision-making logic
-- Extensibility and explainability
+### Availability Engine
 
-The architecture is designed so real integrations can be added later
-without changing the core logic.
+The availability module evaluates calendar availability and detects
+potential conflicts. When a requested time is unavailable, the system
+suggests alternative meeting slots.
 
----
+### Service Integrations
 
-## 🔍 Transparency & Debugging
+ExecAI integrates with external services in order to execute actions:
 
-The UI includes a **Debug panel** that shows:
-- Detected intent and extracted entities
-- Decision made by the orchestrator
-- Planned or executed action
+-   Google Calendar API for event creation and scheduling
+-   Gmail API for reading emails and generating drafts
 
-This makes the agent’s reasoning explicit and auditable.
+------------------------------------------------------------------------
 
----
+## Execution Flow
 
-## 🛠 Tech Stack
+The following diagram illustrates how a request moves through the
+system.
 
-- Python
-- FastAPI
-- Streamlit
-- Pydantic
-- Optional: OpenAI API
+![ExecAI Sequence](docs/execai_sequence_diagram.png)
 
----
+A typical interaction proceeds as follows:
 
-## 🔮 Future Work (Optional)
+1.  The user submits a request through the Streamlit interface.
+2.  The frontend sends the request to the FastAPI backend.
+3.  The intent parser analyzes the request and extracts structured data.
+4.  The orchestrator determines the required action.
+5.  The availability module checks for conflicts if scheduling is
+    required.
+6.  The appropriate integration (Calendar or Gmail) executes the action.
+7.  The result is returned to the frontend and displayed to the user.
 
-- Google Calendar OAuth (read/write)
-- Gmail draft & send integration
-- Microsoft Graph support
-- Persistent user memory
-- Task chaining across multiple steps
+------------------------------------------------------------------------
 
----
+## Supported Capabilities
 
-## ✅ Status
+### Calendar
 
-This MVP demonstrates a fully working **end-to-end intelligent agent**
-with hybrid NLP, decision orchestration, and mock execution flows.
+-   List upcoming events
+-   Create new events
+-   Detect scheduling conflicts
+-   Suggest alternative meeting times
 
+### Email
+
+-   List recent emails
+-   Read emails
+-   Draft new emails
+-   Generate reply drafts
+-   Reply to emails and schedule meetings
+
+------------------------------------------------------------------------
+
+## Transparency and Debugging
+
+The system includes an optional debugging panel that exposes the
+assistant's internal reasoning. This allows users to inspect:
+
+-   Detected intent
+-   Extracted entities
+-   Orchestrator decisions
+-   Execution results
+
+Providing this visibility helps ensure the system remains understandable
+and traceable during development.
+
+------------------------------------------------------------------------
+
+## Technology Stack
+
+Backend
+
+-   Python
+-   FastAPI
+-   Pydantic
+
+Frontend
+
+-   Streamlit
+
+Integrations
+
+-   Gmail API
+-   Google Calendar API
+
+------------------------------------------------------------------------
+
+## Project Structure
+
+execai
+
+backend\
+main.py\
+orchestrator.py\
+intent.py\
+availability.py\
+integrations.py
+
+frontend\
+app.py
+
+docs\
+execai_system_architecture.png\
+execai_sequence_diagram.png
+
+README.md
+
+------------------------------------------------------------------------
+
+## Future Improvements
+
+Potential extensions for the system include:
+
+-   Support for additional email and calendar providers
+-   Multi-step task planning
+-   User preference memory
+-   Authentication and multi-user support
+-   Deployment as a hosted service
+
+------------------------------------------------------------------------
+
+## Status
+
+ExecAI demonstrates a functional intelligent assistant architecture with
+intent detection, decision orchestration, and integration with real
+calendar and email services.
