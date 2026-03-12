@@ -235,7 +235,9 @@ def submit_prompt(prompt: str):
         )
 
 
-def create_event_directly(title: str, start: str, duration_min: int):
+def create_event_directly(title: str, start: str, duration_min: int, attendee_emails=None):
+    attendee_emails = attendee_emails or []
+
     try:
         res = requests.post(
             f"{API_BASE}/integrations/google/create-event",
@@ -243,7 +245,7 @@ def create_event_directly(title: str, start: str, duration_min: int):
                 "title": title,
                 "start": start,
                 "duration_min": int(duration_min),
-                "attendees": [],
+                "attendees": attendee_emails,
                 "description": "",
                 "send_notifications": True,
             },
@@ -259,6 +261,7 @@ def create_event_directly(title: str, start: str, duration_min: int):
             "title": title,
             "start": start,
             "duration_min": int(duration_min),
+            "attendee_emails": attendee_emails,
             "message": "Alternative event created.",
         }
 
@@ -269,6 +272,7 @@ def create_event_directly(title: str, start: str, duration_min: int):
                     "title": title,
                     "start": start,
                     "duration_min": int(duration_min),
+                    "attendee_emails": attendee_emails,
                 },
                 "mode": "ui_direct_action",
                 "note": "Created directly from alternative time button.",
@@ -289,6 +293,7 @@ def create_event_directly(title: str, start: str, duration_min: int):
             "title": title,
             "start": start,
             "duration_min": int(duration_min),
+            "attendee_emails": attendee_emails,
             "message": "Failed to create alternative event.",
         }
         result = {
@@ -303,6 +308,7 @@ def create_event_directly(title: str, start: str, duration_min: int):
                     "title": title,
                     "start": start,
                     "duration_min": int(duration_min),
+                    "attendee_emails": attendee_emails,
                 },
                 "mode": "ui_direct_action",
                 "note": "Alternative time creation failed.",
@@ -538,6 +544,7 @@ def render_alternatives(alternatives: list, proposed_event: dict | None = None, 
 
     proposed_event = proposed_event or {}
     event_title = proposed_event.get("title") or "Meeting"
+    attendee_emails = proposed_event.get("attendee_emails") or []
 
     st.markdown('<div class="section-title">🕒 Alternative times</div>', unsafe_allow_html=True)
 
@@ -553,12 +560,16 @@ def render_alternatives(alternatives: list, proposed_event: dict | None = None, 
         st.markdown(f"**Start:** {start}")
         st.markdown(f"**Duration:** {dur} minutes")
 
+        if attendee_emails:
+            st.markdown("**Attendees:** " + ", ".join(attendee_emails))
+
         button_key = f"{card_key_prefix}_{idx}_{start_raw}_{event_title}"
         if st.button(f"Create this event ({label})", key=button_key, use_container_width=True):
             create_event_directly(
                 title=event_title,
                 start=start_raw,
                 duration_min=int(dur),
+                attendee_emails=attendee_emails,
             )
 
         st.markdown("</div>", unsafe_allow_html=True)
@@ -584,6 +595,8 @@ def render_proposed_event(proposed: dict):
         st.markdown(f"**Start:** {format_datetime(proposed.get('start'))}")
     if proposed.get("duration_min"):
         st.markdown(f"**Duration:** {proposed.get('duration_min')} minutes")
+    if proposed.get("attendee_emails"):
+        st.markdown("**Attendees:** " + ", ".join(proposed.get("attendee_emails")))
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -698,7 +711,9 @@ def render_assistant_result(decision: dict, result):
                 "title": decision.get("title"),
                 "start": decision.get("start"),
                 "duration_min": decision.get("duration_min"),
+                "attendee_emails": decision.get("attendee_emails", []),
             }
+            render_proposed_event(proposed)
             render_alternatives(
                 decision.get("alternatives", []) or [],
                 proposed,
@@ -836,6 +851,8 @@ if not st.session_state.messages:
             • read my latest email<br>
             • reply to my latest email saying "Thanks for the update"<br>
             • reply to my latest email saying "I am available tomorrow at 2pm" and create the meeting<br>
+            • create a meeting with sarah@example.com tomorrow at 11am<br>
+            • schedule a budget review with sarah@example.com and john@example.com tomorrow at 11am for 45 minutes<br>
             • show my calendar for next week<br>
             • create an event called Budget Review tomorrow at 2pm for 45 minutes<br>
             • draft an email to sarah@example.com about the proposal<br>

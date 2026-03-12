@@ -27,6 +27,19 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for item in items or []:
+        val = str(item).strip()
+        key = val.lower()
+        if not val or key in seen:
+            continue
+        seen.add(key)
+        out.append(val)
+    return out
+
+
 def _infer_event_title(raw_text: str) -> str:
     t = (raw_text or "").strip()
     if not t:
@@ -182,7 +195,6 @@ def _suggest_alternative_slots(
     try:
         search_start, search_end = timeframe_to_range(timeframe, tz)
 
-        # Make sure the requested start is inside the search window.
         if start_dt < search_start:
             search_start = start_dt.replace(hour=8, minute=0, second=0, microsecond=0)
         if start_dt + timedelta(hours=8) > search_end:
@@ -206,7 +218,6 @@ def _suggest_alternative_slots(
             tz=tz,
         ) or []
 
-        # Prefer future options at or after the requested start
         filtered: List[Dict[str, Any]] = []
         for slot in slots:
             slot_start_raw = slot.get("start")
@@ -220,7 +231,6 @@ def _suggest_alternative_slots(
             if slot_start >= start_dt:
                 filtered.append(_normalize_slot(slot))
 
-        # Fallback to earliest available if none after requested start
         if not filtered:
             filtered = [_normalize_slot(slot) for slot in slots[:max_options]]
 
@@ -243,8 +253,8 @@ def _build_create_event_decision(intent: str, entities: Dict[str, Any], original
     start_dt = _default_start_from_timeframe(timeframe, start_source, DEFAULT_TZ)
     end_dt = start_dt + timedelta(minutes=duration_min)
 
-    attendee_emails = entities.get("attendee_emails", [])
-    attendee_names = entities.get("attendee_names", [])
+    attendee_emails = _dedupe_keep_order(entities.get("attendee_emails", []) or [])
+    attendee_names = _dedupe_keep_order(entities.get("attendee_names", []) or [])
 
     try:
         busy_blocks = get_busy_blocks(start_dt, DEFAULT_TZ, use_google=True)
@@ -383,6 +393,8 @@ def handle_intent(intent_data: dict) -> dict:
             "start": event_decision.get("start"),
             "duration_min": event_decision.get("duration_min"),
             "start_hint": event_decision.get("start_hint"),
+            "attendee_emails": event_decision.get("attendee_emails", []),
+            "attendee_names": event_decision.get("attendee_names", []),
             "has_conflicts": event_decision.get("has_conflicts", False),
             "conflicts": event_decision.get("conflicts", []),
             "alternatives": event_decision.get("alternatives", []),
@@ -394,8 +406,8 @@ def handle_intent(intent_data: dict) -> dict:
         timeframe = (entities.get("timeframe") or "").strip() or None
         duration_min = _safe_int(entities.get("duration_min", 30), 30)
         duration_min = max(5, min(duration_min, 240))
-        attendee_emails = entities.get("attendee_emails", [])
-        attendee_names = entities.get("attendee_names", [])
+        attendee_emails = _dedupe_keep_order(entities.get("attendee_emails", []) or [])
+        attendee_names = _dedupe_keep_order(entities.get("attendee_names", []) or [])
 
         try:
             search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)

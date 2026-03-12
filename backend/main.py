@@ -1,6 +1,6 @@
 # backend/main.py
 from datetime import datetime, timedelta
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -34,6 +34,7 @@ class CreateEventRequest(BaseModel):
     title: str
     start: str
     duration_min: int = 30
+    attendee_emails: List[str] = []
 
 
 class DraftEmailRequest(BaseModel):
@@ -46,6 +47,19 @@ class DraftEmailRequest(BaseModel):
 # -----------------------
 # HELPERS
 # -----------------------
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for item in items or []:
+        val = str(item).strip()
+        key = val.lower()
+        if not val or key in seen:
+            continue
+        seen.add(key)
+        out.append(val)
+    return out
+
+
 def _resolve_target_email(
     provider: str,
     email_reference: str,
@@ -174,7 +188,13 @@ def assistant(payload: ParseIntentRequest):
             title = (decision or {}).get("title") or entities.get("title")
             start = (decision or {}).get("start") or entities.get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
-            attendee_emails = (decision or {}).get("attendee_emails") or entities.get("attendee_emails") or []
+            attendee_emails = (
+                (decision or {}).get("attendee_emails")
+                or entities.get("attendee_emails")
+                or []
+            )
+            attendee_emails = _dedupe_keep_order(attendee_emails)
+
             has_conflicts = bool((decision or {}).get("has_conflicts", False))
             conflicts = (decision or {}).get("conflicts", []) or []
             alternatives = (decision or {}).get("alternatives", []) or []
@@ -196,6 +216,7 @@ def assistant(payload: ParseIntentRequest):
                         "title": title,
                         "start": start,
                         "duration_min": int(duration_min),
+                        "attendee_emails": attendee_emails,
                     },
                 }
             else:
@@ -335,6 +356,13 @@ def assistant(payload: ParseIntentRequest):
             event_title = (decision or {}).get("event_title") or entities.get("title") or "Meeting"
             event_start = (decision or {}).get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
+            attendee_emails = (
+                (decision or {}).get("attendee_emails")
+                or entities.get("attendee_emails")
+                or []
+            )
+            attendee_emails = _dedupe_keep_order(attendee_emails)
+
             has_conflicts = bool((decision or {}).get("has_conflicts", False))
             conflicts = (decision or {}).get("conflicts", []) or []
             alternatives = (decision or {}).get("alternatives", []) or []
@@ -397,6 +425,7 @@ def assistant(payload: ParseIntentRequest):
                                     "title": event_title,
                                     "start": event_start,
                                     "duration_min": int(duration_min),
+                                    "attendee_emails": attendee_emails,
                                 },
                             },
                             "message": "Reply draft created. Calendar event not created because of a conflict.",
@@ -407,6 +436,7 @@ def assistant(payload: ParseIntentRequest):
                             title=str(event_title),
                             start=str(event_start),
                             duration_min=int(duration_min),
+                            attendees=attendee_emails,
                         )
 
                         result = {
@@ -475,6 +505,7 @@ def create_event(req: CreateEventRequest):
             "title": req.title,
             "start": req.start,
             "duration_min": req.duration_min,
+            "attendee_emails": req.attendee_emails,
             "provider": "mock",
         },
         "message": "Event created successfully (mock).",
