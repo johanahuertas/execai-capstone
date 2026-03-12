@@ -7,8 +7,8 @@ scheduling meetings and drafting professional emails.
 The project focuses on the architecture of intelligent assistants,
 particularly intent detection, orchestration logic, and integration with
 external services. Rather than emphasizing complex machine learning
-models, the system highlights clear system design and reliable task
-execution.
+models, the system highlights clear system design, reliable task
+execution, and transparent decision making.
 
 ------------------------------------------------------------------------
 
@@ -25,19 +25,20 @@ Example requests include:
 -   Email Sarah the invoice professionally
 -   Reply to my latest email and schedule a meeting
 -   Show my calendar for next week
+-   Draft an email to a colleague about a proposal
 
-The assistant processes each request through several stages:
+Each request is processed through several stages:
 
-1.  Intent detection and entity extraction
-2.  Decision making through an orchestration layer
-3.  Execution through the appropriate service integration
+1.  Intent detection and entity extraction\
+2.  Decision making through an orchestration layer\
+3.  Execution through the appropriate integration\
 4.  Returning structured results to the user interface
 
 ------------------------------------------------------------------------
 
 ## System Architecture
 
-The system is composed of a lightweight client interface and a backend
+The system is composed of a lightweight user interface and a backend
 service responsible for interpreting requests and coordinating actions.
 
 ![ExecAI Architecture](docs/execai_system_architecture.png)
@@ -45,34 +46,54 @@ service responsible for interpreting requests and coordinating actions.
 ### Frontend
 
 The frontend is implemented using Streamlit. It provides a
-conversational interface that allows users to submit requests and view
-results returned from the assistant. The interface also includes an
-optional debugging panel that displays internal reasoning such as
-detected intents and decisions.
+conversational interface where users can submit requests and view
+results returned by the assistant.
+
+The interface also includes an optional debugging panel that exposes
+internal system reasoning such as detected intents and orchestration
+decisions.
 
 ### Backend
 
-The backend is implemented with FastAPI and is responsible for
-coordinating all assistant operations. It exposes an API endpoint that
-receives user requests and routes them through the assistant workflow.
+The backend is implemented with FastAPI. It exposes an API endpoint that
+receives user requests and coordinates all assistant operations.
+
+The backend is responsible for:
+
+-   Processing requests
+-   Detecting intents
+-   Extracting entities
+-   Orchestrating actions
+-   Communicating with external services
 
 ### Intent Parser
 
 The intent parser analyzes user input and determines the user's goal. It
-extracts structured information such as participants, timeframes,
-topics, and tone for email drafts.
+extracts structured information such as:
+
+-   Participants
+-   Timeframes
+-   Topics
+-   Email tone
+
+This structured representation allows the system to convert natural
+language into executable actions.
 
 ### Orchestrator
 
 The orchestrator acts as the decision engine of the assistant. Based on
-the detected intent and extracted entities, it determines which actions
-must be executed and which integrations should be invoked.
+the detected intent and extracted entities, it determines which action
+should be executed and which integration should be invoked.
+
+This component ensures that the assistant behaves predictably and that
+different capabilities (email, scheduling, suggestions) are handled
+through a unified decision layer.
 
 ### Availability Engine
 
 The availability module evaluates calendar availability and detects
-potential conflicts. When a requested time is unavailable, the system
-suggests alternative meeting slots.
+scheduling conflicts. When a requested meeting time is unavailable, the
+system generates alternative meeting slots.
 
 ### Service Integrations
 
@@ -96,10 +117,27 @@ A typical interaction proceeds as follows:
 2.  The frontend sends the request to the FastAPI backend.
 3.  The intent parser analyzes the request and extracts structured data.
 4.  The orchestrator determines the required action.
-5.  The availability module checks for conflicts if scheduling is
-    required.
+5.  The availability module checks for conflicts when scheduling.
 6.  The appropriate integration (Calendar or Gmail) executes the action.
 7.  The result is returned to the frontend and displayed to the user.
+
+------------------------------------------------------------------------
+
+## Agent Decision Flow
+
+The assistant uses a decision flow that routes requests depending on the
+detected intent. This ensures that each user request is handled by the
+appropriate workflow.
+
+![ExecAI Decision Flow](docs/execai_decision_flow.png)
+
+The decision flow includes:
+
+-   Calendar actions (list events, create events)
+-   Email actions (read email, draft email, reply)
+-   Combined workflows such as replying to an email and scheduling a
+    meeting
+-   Fallback responses when the intent cannot be determined
 
 ------------------------------------------------------------------------
 
@@ -108,14 +146,14 @@ A typical interaction proceeds as follows:
 ### Calendar
 
 -   List upcoming events
--   Create new events
+-   Create calendar events
 -   Detect scheduling conflicts
 -   Suggest alternative meeting times
 
 ### Email
 
 -   List recent emails
--   Read emails
+-   Read email content
 -   Draft new emails
 -   Generate reply drafts
 -   Reply to emails and schedule meetings
@@ -124,16 +162,16 @@ A typical interaction proceeds as follows:
 
 ## Transparency and Debugging
 
-The system includes an optional debugging panel that exposes the
-assistant's internal reasoning. This allows users to inspect:
+ExecAI includes an optional debugging panel that exposes the assistant's
+internal reasoning. This allows developers to inspect:
 
 -   Detected intent
 -   Extracted entities
 -   Orchestrator decisions
 -   Execution results
 
-Providing this visibility helps ensure the system remains understandable
-and traceable during development.
+This transparency helps ensure that the system remains understandable
+and traceable during development and testing.
 
 ------------------------------------------------------------------------
 
@@ -172,7 +210,8 @@ app.py
 
 docs\
 execai_system_architecture.png\
-execai_sequence_diagram.png
+execai_sequence_diagram.png\
+execai_decision_flow.png
 
 README.md
 
@@ -194,4 +233,6 @@ Potential extensions for the system include:
 
 ExecAI demonstrates a functional intelligent assistant architecture with
 intent detection, decision orchestration, and integration with real
-calendar and email services.
+calendar and email services. The project highlights how natural language
+interfaces can coordinate multiple workflows within a unified assistant
+system.
