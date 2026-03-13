@@ -45,7 +45,68 @@ def _extract_attendee_emails(text: str) -> List[str]:
 
 
 def _extract_attendee_names(text: str) -> List[str]:
-    return []
+    """
+    Extract attendee names from natural language input.
+    """
+    t = (text or "").strip()
+    if not t:
+        return []
+
+    names: List[str] = []
+
+    m = re.search(r"\bwith\s+(.+)", t, re.IGNORECASE)
+    if m:
+        names.extend(_parse_name_chunk(m.group(1)))
+
+    if not names:
+        m2 = re.search(r"\binvite\s+(.+)", t, re.IGNORECASE)
+        if m2:
+            names.extend(_parse_name_chunk(m2.group(1)))
+
+    if not names:
+        m3 = re.search(r"\bbetween\s+(.+)", t, re.IGNORECASE)
+        if m3:
+            names.extend(_parse_name_chunk(m3.group(1)))
+
+    return _dedupe_keep_order([n.lower() for n in names])
+
+
+def _parse_name_chunk(chunk: str) -> List[str]:
+  
+    boundary = re.split(
+        r"\b(?:tomorrow|today|next|this|at|on|for|about|regarding|"
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|in the|after|before)\b",
+        chunk,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
+
+    if not boundary:
+        return []
+
+    boundary = re.sub(
+        r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+        "",
+        boundary,
+    )
+
+    parts = re.split(r"[,]?\s+and\s+|,\s*", boundary)
+
+    names = []
+    for p in parts:
+        p = p.strip().strip(".,;:'\"")
+        if not p or len(p) < 2:
+            continue
+
+        words = p.split()
+        if len(words) > 3:
+            continue
+
+        if words[0][0].isupper() or words[0].lower() in {"dr.", "mr.", "ms.", "mrs.", "prof."}:
+            names.append(p)
+
+    return names
 
 
 def _extract_participants(text: str) -> Optional[int]:
