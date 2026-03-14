@@ -122,7 +122,10 @@ def format_datetime(value: str) -> str:
         return ""
 
     try:
-        return datetime.fromisoformat(value).strftime("%a, %b %d · %I:%M %p")
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(value)
+        dt = dt.astimezone(ZoneInfo("America/New_York"))
+        return dt.strftime("%a, %b %d · %I:%M %p %Z")
     except Exception:
         return value
 
