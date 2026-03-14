@@ -101,6 +101,31 @@ def _parse_time_from_text(text: str) -> Optional[Tuple[int, int]]:
         minute = int(m2.group(2))
         return hour, minute
 
+    natural_times = {
+        "early morning": (7, 0),
+        "in the morning": (9, 0),
+        "morning": (9, 0),
+        "mid-morning": (10, 0),
+        "midmorning": (10, 0),
+        "before lunch": (11, 0),
+        "noon": (12, 0),
+        "at noon": (12, 0),
+        "lunchtime": (12, 0),
+        "lunch time": (12, 0),
+        "after lunch": (13, 0),
+        "early afternoon": (13, 0),
+        "afternoon": (14, 0),
+        "in the afternoon": (14, 0),
+        "mid-afternoon": (14, 30),
+        "midafternoon": (14, 30),
+        "late afternoon": (16, 0),
+        "end of day": (16, 30),
+    }
+
+    for phrase, (hour, minute) in natural_times.items():
+        if phrase in t:
+            return hour, minute
+
     return None
 
 
