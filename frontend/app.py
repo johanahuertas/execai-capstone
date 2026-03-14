@@ -2,7 +2,7 @@ import re
 import html
 import requests
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 
 API_BASE = "http://127.0.0.1:8000"
 
@@ -364,6 +364,57 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
 
         append_assistant_message(decision, result)
         st.rerun()
+
+
+def demo_show_upcoming_meetings():
+    try:
+        res = requests.post(
+            f"{API_BASE}/integrations/google/list-events",
+            json={"days": 7},
+            timeout=20,
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def demo_check_free_time_tomorrow():
+    try:
+        tomorrow = datetime.now() + timedelta(days=1)
+        start_dt = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0)
+        end_dt = tomorrow.replace(hour=17, minute=0, second=0, microsecond=0)
+
+        res = requests.post(
+            f"{API_BASE}/integrations/google/freebusy",
+            json={
+                "time_min": start_dt.isoformat(),
+                "time_max": end_dt.isoformat(),
+                "calendar_ids": ["primary"],
+            },
+            timeout=20,
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def demo_create_draft(to: str, subject: str, body: str):
+    try:
+        res = requests.post(
+            f"{API_BASE}/integrations/google/create-draft",
+            json={
+                "to": to,
+                "subject": subject,
+                "body": body,
+            },
+            timeout=20,
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 # -----------------------
@@ -1007,6 +1058,74 @@ st.markdown(
     '<div class="subtitle">A lightweight executive assistant MVP with real Google Calendar and Gmail integrations.</div>',
     unsafe_allow_html=True,
 )
+
+
+# -----------------------
+# DEMO PANELS
+# -----------------------
+
+demo_col1, demo_col2, demo_col3 = st.columns(3)
+
+with demo_col1:
+    st.markdown("### Upcoming Meetings")
+    if st.button("Show my next meetings", use_container_width=True):
+        demo_events = demo_show_upcoming_meetings()
+        if demo_events.get("status") == "error":
+            st.error(f"Could not load meetings: {demo_events.get('detail', 'Unknown error')}")
+        else:
+            events = demo_events.get("events", []) or []
+            if not events:
+                st.info("No meetings found.")
+            else:
+                for event in events[:5]:
+                    st.markdown('<div class="card">', unsafe_allow_html=True)
+                    st.markdown('<div class="pill">Calendar</div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="card-title">{event.get("title") or "(No title)"}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if event.get("start"):
+                        st.markdown(f"**Start:** {format_datetime(event.get('start'))}")
+                    if event.get("end"):
+                        st.markdown(f"**End:** {format_datetime(event.get('end'))}")
+                    if event.get("htmlLink"):
+                        st.markdown(f"[Open in Google Calendar]({event.get('htmlLink')})")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+with demo_col2:
+    st.markdown("### Free Time Tomorrow")
+    if st.button("Check availability tomorrow", use_container_width=True):
+        freebusy = demo_check_free_time_tomorrow()
+        if freebusy.get("status") == "error":
+            st.error(f"Could not check availability: {freebusy.get('detail', 'Unknown error')}")
+        else:
+            busy_blocks = freebusy.get("busy_blocks", []) or []
+            if not busy_blocks:
+                st.success("You are free tomorrow between 9:00 AM and 5:00 PM.")
+            else:
+                st.warning("Busy times found tomorrow:")
+                for block in busy_blocks:
+                    st.markdown('<div class="card">', unsafe_allow_html=True)
+                    st.markdown('<div class="pill">Busy</div>', unsafe_allow_html=True)
+                    st.markdown(f"**From:** {format_datetime(block.get('start', ''))}")
+                    st.markdown(f"**To:** {format_datetime(block.get('end', ''))}")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+with demo_col3:
+    st.markdown("### Draft Email")
+    demo_to = st.text_input("Recipient", key="demo_to")
+    demo_subject = st.text_input("Subject", key="demo_subject")
+    demo_body = st.text_area("Message", key="demo_body", height=130)
+
+    if st.button("Create Gmail Draft", use_container_width=True):
+        draft_result = demo_create_draft(demo_to, demo_subject, demo_body)
+        if draft_result.get("status") == "draft_created":
+            st.success("Draft created in Gmail.")
+            render_created_draft(draft_result)
+        else:
+            st.error(f"Could not create draft: {draft_result.get('detail', 'Unknown error')}")
+
+st.divider()
 
 
 # -----------------------
