@@ -5,17 +5,28 @@ import re
 import json
 from typing import Any, Dict, Optional, List
 
-USE_LLM = bool(os.getenv("OPENAI_API_KEY"))
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+USE_LLM = bool(os.getenv("GROQ_API_KEY"))
 
 _client = None
 if USE_LLM:
     try:
         from openai import OpenAI
 
-        _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        _client = OpenAI(
+            api_key=os.getenv("GROQ_API_KEY"),
+            base_url="https://api.groq.com/openai/v1",
+        )
     except Exception:
         _client = None
         USE_LLM = False
+
+_DEFAULT_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
 
 EMAIL_REGEX = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
 
@@ -826,7 +837,7 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
     )
 
     resp = _client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        model=_DEFAULT_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": f"Text: {text}"},
