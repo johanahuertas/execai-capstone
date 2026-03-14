@@ -1,5 +1,3 @@
-# frontend/app.py
-
 import re
 import html
 import requests
@@ -112,6 +110,12 @@ if "debug_last" not in st.session_state:
         "result": None,
     }
 
+if "google_auth_url" not in st.session_state:
+    st.session_state.google_auth_url = None
+
+if "google_status" not in st.session_state:
+    st.session_state.google_status = None
+
 
 # -----------------------
 # HELPERS
@@ -184,6 +188,33 @@ def append_assistant_message(decision: dict, result):
             "result": result,
         }
     )
+
+
+def check_google_status():
+    try:
+        res = requests.get(f"{API_BASE}/integrations/status", timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        st.session_state.google_status = bool(data.get("google_connected", False))
+    except Exception:
+        st.session_state.google_status = False
+
+
+def prepare_google_connect():
+    try:
+        res = requests.get(f"{API_BASE}/integrations/google/auth-url", timeout=15)
+        res.raise_for_status()
+        data = res.json()
+        auth_url = data.get("auth_url")
+
+        if auth_url:
+            st.session_state.google_auth_url = auth_url
+        else:
+            st.session_state.google_auth_url = None
+            st.error("Could not generate Google authorization link.")
+    except Exception as e:
+        st.session_state.google_auth_url = None
+        st.error(f"Google connect error: {e}")
 
 
 def submit_prompt(prompt: str):
@@ -888,12 +919,30 @@ def render_assistant_result(decision: dict, result):
 # SIDEBAR
 # -----------------------
 
+check_google_status()
+
 with st.sidebar:
     st.markdown("## ExecAI")
     st.markdown(
         '<div class="sidebar-note">Your AI executive assistant for scheduling and email workflows.</div>',
         unsafe_allow_html=True,
     )
+    st.divider()
+
+    st.markdown("### Google connection")
+
+    if st.session_state.google_status:
+        st.success("Google is connected.")
+    else:
+        st.warning("Google is not connected.")
+
+    if st.button("🔗 Connect Google", use_container_width=True):
+        prepare_google_connect()
+        st.rerun()
+
+    if st.session_state.google_auth_url:
+        st.markdown(f"[Authorize Google account]({st.session_state.google_auth_url})")
+
     st.divider()
 
     st.markdown("### Quick actions")
@@ -943,6 +992,7 @@ with st.sidebar:
             "decision": None,
             "result": None,
         }
+        st.session_state.google_auth_url = None
         st.rerun()
 
     show_debug = st.toggle("Show debug", value=False)

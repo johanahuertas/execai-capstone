@@ -1,5 +1,3 @@
-# backend/integrations.py
-
 import os
 import re
 import json
@@ -19,6 +17,7 @@ except Exception:
 
 import requests
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -736,7 +735,7 @@ def auth_url():
     return {"auth_url": _google_build_auth_url()}
 
 
-@router.get("/google/callback")
+@router.get("/google/callback", response_class=HTMLResponse)
 def callback(code: str, state: str):
     if not state or state != _OAUTH_STATE.get("google"):
         raise HTTPException(status_code=400, detail="Invalid or missing OAuth state.")
@@ -759,7 +758,49 @@ def callback(code: str, state: str):
         raise HTTPException(status_code=400, detail=r.text)
 
     _save_google_token(r.json())
-    return {"status": "connected"}
+    _OAUTH_STATE["google"] = None
+
+    return """
+    <html>
+        <head>
+            <title>ExecAI - Google Connected</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background: #f9fafb;
+                    color: #111827;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-height: 100vh;
+                    margin: 0;
+                }
+                .card {
+                    background: white;
+                    padding: 32px;
+                    border-radius: 16px;
+                    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+                    max-width: 500px;
+                    text-align: center;
+                }
+                h1 {
+                    margin-bottom: 12px;
+                }
+                p {
+                    color: #4b5563;
+                    line-height: 1.5;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>Google connected successfully</h1>
+                <p>Your Google account is now linked to ExecAI.</p>
+                <p>You can close this window and return to the app.</p>
+            </div>
+        </body>
+    </html>
+    """
 
 
 @router.post("/google/list-events")
