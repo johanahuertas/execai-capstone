@@ -39,12 +39,13 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
     seen = set()
     out: List[str] = []
 
-    for item in items:
-        key = item.strip().lower()
-        if not key or key in seen:
+    for item in items or []:
+        value = str(item).strip()
+        key = value.lower()
+        if not value or key in seen:
             continue
         seen.add(key)
-        out.append(item.strip())
+        out.append(value)
 
     return out
 
@@ -187,9 +188,9 @@ def _extract_timeframe(text: str) -> Optional[str]:
 def _extract_meeting_type(text: str) -> str:
     t = (text or "").lower()
 
-    if any(w in t for w in ["zoom", "teams", "call", "phone call"]):
+    if any(w in t for w in ["zoom", "teams", "call", "phone call", "video call"]):
         return "call"
-    if any(w in t for w in ["meeting", "meet", "sync", "catch up"]):
+    if any(w in t for w in ["meeting", "meet", "sync", "catch up", "check-in"]):
         return "meeting"
 
     return "unknown"
@@ -207,6 +208,12 @@ def _extract_duration_min(text: str) -> Optional[int]:
     m2 = re.search(r"\bfor\s+(\d{1,3})\s*(min|mins|minute|minutes)\b", t)
     if m2:
         n = int(m2.group(1))
+        if 5 <= n <= 240:
+            return n
+
+    m3 = re.search(r"\b(\d{1,2})\s*(hour|hours|hr|hrs)\b", t)
+    if m3:
+        n = int(m3.group(1)) * 60
         if 5 <= n <= 240:
             return n
 
@@ -265,6 +272,8 @@ def _extract_topic(text: str) -> Optional[str]:
         "schedule",
         "availability",
         "budget",
+        "review",
+        "update",
     ]:
         if topic in t:
             return topic
@@ -282,7 +291,12 @@ def _extract_email_subject(text: str) -> Optional[str]:
     m2 = re.search(r"\babout\s+(.+)", t, re.IGNORECASE)
     if m2:
         candidate = m2.group(1).strip().strip('"').strip("'")
-        candidate = re.split(r"\bin a\b|\bwith a\b|\busing a\b", candidate, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        candidate = re.split(
+            r"\bin a\b|\bwith a\b|\busing a\b|\band create\b|\band schedule\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
         if candidate:
             return candidate[:120]
 
@@ -303,6 +317,10 @@ def _extract_email_body_hint(text: str) -> Optional[str]:
     m3 = re.search(r'reply(?:ing)?\s+(?:with|saying)\s+"([^"]+)"', t, re.IGNORECASE)
     if m3:
         return m3.group(1).strip()
+
+    m4 = re.search(r'draft an email .*? saying\s+(.+?)(?:\s+and\s+create|\s+and\s+schedule|$)', t, re.IGNORECASE)
+    if m4:
+        return m4.group(1).strip().strip('"').strip("'")
 
     return None
 
@@ -393,9 +411,23 @@ def _extract_event_title(text: str) -> Optional[str]:
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0].strip(" ,.-")
+        candidate = re.sub(r"^(the|a|an)\s+", "", candidate, flags=re.IGNORECASE).strip()
+
+        generic_titles = {
+            "meeting": "Meeting",
+            "event": "Event",
+            "appointment": "Appointment",
+        }
+
+        normalized = candidate.lower().strip()
+        if normalized in generic_titles:
+            return generic_titles[normalized]
 
         if candidate and len(candidate) > 1:
             return candidate[:120]
+
+    if re.search(r"\bbudget review\b", t, re.IGNORECASE):
+        return "budget review"
 
     if re.search(r"\bmeeting\b", t, re.IGNORECASE):
         return "Meeting"
@@ -439,6 +471,32 @@ def _looks_like_list_events(text: str) -> bool:
     has_list = any(_has_word(t, v) for v in list_words)
 
     return has_calendar and has_list
+
+
+def _looks_like_suggest_times(text: str) -> bool:
+    t = (text or "").lower()
+
+    explicit_phrases = [
+        "find a time",
+        "find time",
+        "suggest a time",
+        "suggest times",
+        "when are we free",
+        "when am i free",
+        "when are you free",
+        "what time works",
+        "what times work",
+        "help me schedule",
+        "availability for",
+    ]
+    if any(p in t for p in explicit_phrases):
+        return True
+
+    has_schedule_word = any(_has_word(t, w) for w in ["meet", "meeting", "schedule", "availability", "free"])
+    has_timeframe = bool(_extract_timeframe(t))
+    has_time = bool(_extract_time_string(t))
+
+    return has_schedule_word and has_timeframe and not has_time
 
 
 def _extract_days(text: str) -> int:
@@ -489,11 +547,17 @@ def _looks_like_create_event(text: str) -> bool:
 
     has_action = any(_has_word(t, w) for w in ["create", "add", "schedule", "book", "make", "put"])
     has_time_context = bool(_extract_timeframe(t) or _extract_time_string(t))
+    has_explicit_time = bool(_extract_time_string(t))
     has_attendee = bool(_extract_attendee_emails(t))
     has_called = _has_word(t, "called")
     has_calendar_word = any(_has_word(t, w) for w in ["event", "meeting", "appointment", "calendar"])
 
-    return has_action and (has_calendar_word or has_time_context or has_called or has_attendee)
+    return has_action and (
+        has_explicit_time
+        or (has_calendar_word and has_time_context)
+        or has_called
+        or (has_attendee and has_explicit_time)
+    )
 
 
 # -----------------------
@@ -570,6 +634,34 @@ def _looks_like_reply_and_create_event(text: str) -> bool:
     return has_reply and has_create_event and has_time_context
 
 
+def _looks_like_draft_and_create_event(text: str) -> bool:
+    t = (text or "").lower()
+
+    has_draft = _looks_like_email_drafting(t) or any(
+        phrase in t for phrase in [
+            "email ",
+            "write to ",
+            "draft to ",
+        ]
+    )
+
+    has_create_event = (
+        "create the meeting" in t
+        or "create a meeting" in t
+        or "create an event" in t
+        or "schedule the meeting" in t
+        or "schedule a meeting" in t
+        or "create the event" in t
+        or "and create" in t
+        or "and schedule" in t
+    )
+
+    has_time_context = bool(_extract_timeframe(t) or _extract_time_string(t))
+    has_recipient = bool(_extract_recipient(t))
+
+    return has_draft and has_create_event and has_time_context and has_recipient
+
+
 def _looks_like_reply_email(text: str) -> bool:
     t = (text or "").lower()
 
@@ -616,8 +708,8 @@ def _classify_intent_rules(text: str) -> str:
     if _looks_like_reply_and_create_event(t):
         return "reply_and_create_event"
 
-    if _looks_like_create_event(t):
-        return "create_event"
+    if _looks_like_draft_and_create_event(t):
+        return "draft_email_and_create_event"
 
     if _looks_like_list_events(t):
         return "list_events"
@@ -636,6 +728,12 @@ def _classify_intent_rules(text: str) -> str:
 
     if any(w in t for w in ["follow up", "follow-up", "remind", "reminder"]):
         return "follow_up_reminder"
+
+    if _looks_like_suggest_times(t):
+        return "meeting_scheduling"
+
+    if _looks_like_create_event(t):
+        return "create_event"
 
     if any(w in t for w in ["send an email", "email", "write an email"]):
         return "email_drafting"
@@ -674,6 +772,25 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
         entities["attendee_emails"] = _extract_attendee_emails(text)
         entities["attendee_names"] = _extract_attendee_names(text)
 
+    elif intent == "draft_email_and_create_event":
+        entities["recipient"] = _extract_recipient(text)
+        entities["topic"] = _extract_topic(text)
+        entities["tone"] = _extract_tone(text)
+        entities["subject"] = _extract_email_subject(text) or _extract_topic(text) or "Meeting"
+        entities["body_hint"] = _extract_email_body_hint(text)
+        entities["title"] = _extract_event_title(text) or "Meeting"
+        entities["timeframe"] = _extract_timeframe(text)
+        entities["start_hint"] = _extract_start_hint(text)
+        entities["duration_min"] = _extract_duration_min(text) or 30
+        entities["attendee_emails"] = _extract_attendee_emails(text)
+        entities["attendee_names"] = _extract_attendee_names(text)
+
+        recipient = entities.get("recipient")
+        if recipient and recipient not in entities["attendee_emails"]:
+            entities["attendee_emails"] = _dedupe_keep_order(
+                entities["attendee_emails"] + [recipient]
+            )
+
     elif intent == "reply_email":
         entities["email_reference"] = _extract_email_reference(text) or "latest"
         entities["email_index"] = _extract_email_index(text)
@@ -694,6 +811,7 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
         entities["duration_min"] = _extract_duration_min(text) or 30
         entities["attendee_emails"] = _extract_attendee_emails(text)
         entities["attendee_names"] = _extract_attendee_names(text)
+        entities["title"] = _extract_event_title(text)
 
     elif intent == "email_drafting":
         entities["recipient"] = _extract_recipient(text)
@@ -740,6 +858,7 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
     allowed = {
         "meeting_scheduling",
         "email_drafting",
+        "draft_email_and_create_event",
         "follow_up_reminder",
         "list_events",
         "create_event",
@@ -763,6 +882,7 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("duration_min", _extract_duration_min(text) or 30)
         entities.setdefault("attendee_emails", _extract_attendee_emails(text))
         entities.setdefault("attendee_names", _extract_attendee_names(text))
+        entities.setdefault("title", _extract_event_title(text))
 
     if intent == "email_drafting":
         entities.setdefault("recipient", _extract_recipient(text))
@@ -770,6 +890,24 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("tone", _extract_tone(text))
         entities.setdefault("subject", _extract_email_subject(text) or _extract_topic(text))
         entities.setdefault("body_hint", _extract_email_body_hint(text))
+
+    if intent == "draft_email_and_create_event":
+        entities.setdefault("recipient", _extract_recipient(text))
+        entities.setdefault("topic", _extract_topic(text))
+        entities.setdefault("tone", _extract_tone(text))
+        entities.setdefault("subject", _extract_email_subject(text) or _extract_topic(text) or "Meeting")
+        entities.setdefault("body_hint", _extract_email_body_hint(text))
+        entities.setdefault("title", _extract_event_title(text) or "Meeting")
+        entities.setdefault("timeframe", _extract_timeframe(text))
+        entities.setdefault("start_hint", _extract_start_hint(text))
+        entities.setdefault("duration_min", _extract_duration_min(text) or 30)
+        entities.setdefault("attendee_emails", _extract_attendee_emails(text))
+        entities.setdefault("attendee_names", _extract_attendee_names(text))
+
+        recipient = entities.get("recipient")
+        attendee_emails = entities.get("attendee_emails") or []
+        if recipient and recipient not in attendee_emails:
+            entities["attendee_emails"] = _dedupe_keep_order(attendee_emails + [recipient])
 
     if intent == "reply_email":
         entities.setdefault("email_reference", _extract_email_reference(text) or "latest")
@@ -829,8 +967,9 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
     system = (
         "You are an intent parser for an executive assistant. "
         "Return ONLY valid JSON with keys: intent, entities. "
-        "Allowed intents: meeting_scheduling, email_drafting, follow_up_reminder, "
-        "list_events, create_event, list_emails, read_email, reply_email, reply_and_create_event, unknown. "
+        "Allowed intents: meeting_scheduling, email_drafting, draft_email_and_create_event, "
+        "follow_up_reminder, list_events, create_event, list_emails, read_email, "
+        "reply_email, reply_and_create_event, unknown. "
         "entities should be an object. "
         "If unsure, use intent='unknown' and entities={}. "
         "Do NOT include extra text."

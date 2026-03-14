@@ -275,7 +275,7 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
             "start": start,
             "duration_min": int(duration_min),
             "attendee_emails": attendee_emails,
-            "message": "Alternative event created.",
+            "message": "Event created from suggested time.",
         }
 
         st.session_state.debug_last = {
@@ -288,8 +288,8 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
                     "attendee_emails": attendee_emails,
                 },
                 "mode": "ui_direct_action",
-                "note": "Created directly from alternative time button.",
-                "original_text": f"Create alternative event {title}",
+                "note": "Created directly from suggested/alternative time button.",
+                "original_text": f"Create event {title}",
             },
             "decision": decision,
             "result": result,
@@ -307,7 +307,7 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
             "start": start,
             "duration_min": int(duration_min),
             "attendee_emails": attendee_emails,
-            "message": "Failed to create alternative event.",
+            "message": "Failed to create event from suggested time.",
         }
         result = {
             "status": "error",
@@ -324,8 +324,8 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
                     "attendee_emails": attendee_emails,
                 },
                 "mode": "ui_direct_action",
-                "note": "Alternative time creation failed.",
-                "original_text": f"Create alternative event {title}",
+                "note": "Suggested time creation failed.",
+                "original_text": f"Create event {title}",
             },
             "decision": decision,
             "result": result,
@@ -528,28 +528,54 @@ def render_mock_draft(result: dict):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_meeting_options(decision: dict):
-    options = decision.get("options", []) or []
+def render_meeting_options(decision: dict, result: dict, key_prefix: str = "suggest_times"):
+    options = result.get("options", []) or decision.get("options", []) or []
     if not options:
-        st.info(decision.get("message", "No meeting options found."))
+        st.info(result.get("message") or decision.get("message") or "No meeting options found.")
         return
+
+    title = result.get("title") or decision.get("title") or "Meeting"
+    if title == "ExecAI Event":
+        title = "Meeting"
+
+    attendee_emails = result.get("attendee_emails", []) or decision.get("attendee_emails", []) or []
+    busy_display = result.get("busy_display", []) or decision.get("busy_display", []) or []
 
     st.markdown('<div class="section-title">🗓 Suggested times</div>', unsafe_allow_html=True)
 
-    busy_display = decision.get("busy_display", []) or []
+    if title:
+        st.markdown(f"**Meeting title:** {title}")
+
+    if attendee_emails:
+        st.markdown("**Attendees:** " + ", ".join(attendee_emails))
+
     if busy_display:
         st.warning("Busy times: " + " · ".join(busy_display))
 
-    for opt in options:
-        label = opt.get("label", "Option")
-        start = format_datetime(opt.get("start", ""))
-        dur = opt.get("duration_min", 30)
+    for idx, opt in enumerate(options):
+        label = opt.get("label", f"Option {idx + 1}")
+        start_raw = opt.get("start", "")
+        start = format_datetime(start_raw)
+        dur = opt.get("duration_min", result.get("duration_min", 30))
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="pill">Scheduling</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card-title">{label}</div>', unsafe_allow_html=True)
         st.markdown(f"**Start:** {start}")
         st.markdown(f"**Duration:** {dur} minutes")
+
+        if attendee_emails:
+            st.markdown("**Attendees:** " + ", ".join(attendee_emails))
+
+        button_key = f"{key_prefix}_{idx}_{start_raw}_{title}_{dur}"
+        if st.button(f"Create this meeting ({label})", key=button_key, use_container_width=True):
+            create_event_directly(
+                title=title,
+                start=start_raw,
+                duration_min=int(dur),
+                attendee_emails=attendee_emails,
+            )
+
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -709,6 +735,60 @@ def render_reply_and_create_event(result: dict):
     render_generic_message({"message": result.get("message", "Done.")})
 
 
+def render_draft_and_create_event(result: dict):
+    status = result.get("status")
+
+    if status == "success":
+        st.success(result.get("message", "Draft email and calendar event created successfully."))
+        draft_result = result.get("draft", {}) or {}
+        calendar_result = result.get("calendar", {}) or {}
+
+        if draft_result:
+            render_created_draft(draft_result)
+        if calendar_result and calendar_result.get("status") == "created":
+            render_created_event(calendar_result)
+
+        return
+
+    if status == "partial_success":
+        st.warning(result.get("message", "Partial success."))
+        draft_result = result.get("draft", {}) or {}
+        calendar_result = result.get("calendar", {}) or {}
+
+        if draft_result:
+            render_created_draft(draft_result)
+
+        cal_status = calendar_result.get("status")
+        if cal_status == "conflict_detected":
+            render_conflicts_from_list(
+                calendar_result.get("conflicts", []) or [],
+                "⚠️ Calendar conflict detected",
+                calendar_result.get("message", "Event not created because of a conflict."),
+            )
+            render_proposed_event(calendar_result.get("proposed_event", {}) or {})
+            render_alternatives(
+                calendar_result.get("alternatives", []) or [],
+                calendar_result.get("proposed_event", {}) or {},
+                card_key_prefix="draft_create_alt",
+            )
+        elif cal_status == "needs_clarification":
+            render_needs_clarification(calendar_result)
+        elif cal_status == "created":
+            render_created_event(calendar_result)
+
+        return
+
+    if status == "not_found":
+        st.warning(result.get("message", "Nothing found."))
+        return
+
+    if status == "needs_clarification":
+        render_needs_clarification(result)
+        return
+
+    render_generic_message({"message": result.get("message", "Done.")})
+
+
 def render_assistant_result(decision: dict, result):
     action = (decision or {}).get("action") or ""
 
@@ -792,8 +872,13 @@ def render_assistant_result(decision: dict, result):
         render_reply_and_create_event(result)
         return
 
-    if action == "suggest_times":
-        render_meeting_options(decision)
+    if action == "draft_email_and_create_event" and isinstance(result, dict):
+        render_draft_and_create_event(result)
+        return
+
+    if action == "suggest_times" and isinstance(result, dict):
+        unique_prefix = f"suggest_times_{abs(hash(str(decision) + str(result)))}"
+        render_meeting_options(decision, result, key_prefix=unique_prefix)
         return
 
     render_generic_message(decision)
@@ -827,6 +912,10 @@ with st.sidebar:
 
     if st.button("🤝 Reply + create meeting", use_container_width=True):
         submit_prompt('reply to my latest email saying "I am available tomorrow at 2pm" and create the meeting')
+        st.rerun()
+
+    if st.button("✉️ Draft + create meeting", use_container_width=True):
+        submit_prompt('draft an email to sarah@example.com saying "I am available tomorrow at 2pm" and create the meeting')
         st.rerun()
 
     if st.button("📅 Show my calendar for next week", use_container_width=True):
@@ -897,6 +986,7 @@ if not st.session_state.messages:
             • read my latest email<br>
             • reply to my latest email saying "Thanks for the update"<br>
             • reply to my latest email saying "I am available tomorrow at 2pm" and create the meeting<br>
+            • draft an email to sarah@example.com saying "I am available tomorrow at 2pm" and create the meeting<br>
             • create a meeting with sarah@example.com tomorrow at 11am<br>
             • schedule a budget review with sarah@example.com and john@example.com tomorrow at 11am for 45 minutes<br>
             • show my calendar for next week<br>

@@ -221,6 +221,19 @@ def assistant(payload: ParseIntentRequest):
                     attendees=attendee_emails,
                 )
 
+        elif action in {"suggest_times", "meeting_scheduling"}:
+            result = {
+                "status": "success",
+                "options": (decision or {}).get("options", []) or [],
+                "attendee_emails": (decision or {}).get("attendee_emails", []) or [],
+                "attendee_names": (decision or {}).get("attendee_names", []) or [],
+                "duration_min": (decision or {}).get("duration_min") or entities.get("duration_min") or 30,
+                "title": (decision or {}).get("title") or entities.get("title"),
+                "source": (decision or {}).get("source", "unknown"),
+                "message": (decision or {}).get("message", "Suggested meeting times generated."),
+                "busy_display": (decision or {}).get("busy_display", []) or [],
+            }
+
         elif action in {"list_emails", "get_emails", "show_inbox"}:
             max_results = (decision or {}).get("max_results")
             if max_results is None:
@@ -423,6 +436,93 @@ def assistant(payload: ParseIntentRequest):
                             "calendar": calendar_result,
                             "message": "Reply draft and calendar event created successfully.",
                         }
+
+        elif action in {"draft_email_and_create_event"}:
+            recipient = (decision or {}).get("recipient") or entities.get("recipient")
+            subject = (decision or {}).get("subject") or entities.get("subject") or "Meeting"
+            body = (decision or {}).get("body") or entities.get("body_hint") or ""
+            event_title = (decision or {}).get("event_title") or entities.get("title") or "Meeting"
+            event_start = (decision or {}).get("start")
+            duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
+            attendee_emails = (
+                (decision or {}).get("attendee_emails")
+                or entities.get("attendee_emails")
+                or []
+            )
+            attendee_emails = _dedupe_keep_order(attendee_emails)
+
+            if recipient and recipient not in attendee_emails:
+                attendee_emails = _dedupe_keep_order(attendee_emails + [str(recipient)])
+
+            has_conflicts = bool((decision or {}).get("has_conflicts", False))
+            conflicts = (decision or {}).get("conflicts", []) or []
+            alternatives = (decision or {}).get("alternatives", []) or []
+
+            if not recipient:
+                result = {
+                    "status": "needs_clarification",
+                    "missing": ["recipient"],
+                    "message": "I can prepare the draft and calendar event, but I need the recipient email address.",
+                    "example": 'Try: "Draft an email to sarah@example.com saying I am available tomorrow at 2pm and create the meeting"',
+                }
+            elif "@" not in str(recipient):
+                result = {
+                    "status": "needs_clarification",
+                    "missing": ["recipient_email"],
+                    "message": f'I understood the recipient as "{recipient}", but I need the full email address to create a real Gmail draft.',
+                    "example": f'Draft an email to {recipient}@example.com saying I am available tomorrow at 2pm and create the meeting',
+                }
+            else:
+                draft_result = create_gmail_draft_service(
+                    provider=provider,
+                    to=str(recipient),
+                    subject=str(subject),
+                    body=str(body),
+                )
+
+                if not event_start:
+                    result = {
+                        "status": "partial_success",
+                        "draft": draft_result,
+                        "calendar": {
+                            "status": "needs_clarification",
+                            "message": "Draft created, but I could not determine the event start time.",
+                        },
+                        "message": "Draft created. Calendar event not created yet.",
+                    }
+                elif has_conflicts:
+                    result = {
+                        "status": "partial_success",
+                        "draft": draft_result,
+                        "calendar": {
+                            "status": "conflict_detected",
+                            "message": "Draft created, but I did not create the calendar event because of a conflict.",
+                            "conflicts": conflicts,
+                            "alternatives": alternatives,
+                            "proposed_event": {
+                                "title": event_title,
+                                "start": event_start,
+                                "duration_min": int(duration_min),
+                                "attendee_emails": attendee_emails,
+                            },
+                        },
+                        "message": "Draft created. Calendar event not created because of a conflict.",
+                    }
+                else:
+                    calendar_result = create_event_service(
+                        provider=provider,
+                        title=str(event_title),
+                        start=str(event_start),
+                        duration_min=int(duration_min),
+                        attendees=attendee_emails,
+                    )
+
+                    result = {
+                        "status": "success",
+                        "draft": draft_result,
+                        "calendar": calendar_result,
+                        "message": "Draft email and calendar event created successfully.",
+                    }
 
         else:
             result = {
