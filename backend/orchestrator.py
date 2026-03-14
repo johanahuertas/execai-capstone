@@ -20,10 +20,6 @@ DEFAULT_PROVIDER = "google"
 DEFAULT_TZ = ZoneInfo("America/New_York")
 
 
-# -----------------------
-# HELPERS
-# -----------------------
-
 def _safe_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -297,7 +293,7 @@ def _build_create_event_decision(intent: str, entities: Dict[str, Any], original
         result["has_conflicts"] = True
         result["alternatives"] = alternatives
         result["message"] = (
-            f"Conflict detected! You are busy during: "
+            "Conflict detected! You are busy during: "
             + ", ".join(conflict_strs)
             + "."
         )
@@ -306,13 +302,107 @@ def _build_create_event_decision(intent: str, entities: Dict[str, Any], original
             result["message"] += " I found alternative times you can use instead."
         else:
             result["message"] += " I could not find alternative times yet."
-
     else:
         result["has_conflicts"] = False
         result["alternatives"] = []
         result["message"] = "No conflicts found. Creating your event."
 
     return result
+
+
+def _build_meeting_scheduling_decision(intent: str, entities: Dict[str, Any], original_text: str) -> dict:
+    timeframe = (entities.get("timeframe") or "").strip() or None
+    duration_min = _safe_int(entities.get("duration_min", 30), 30)
+    duration_min = max(5, min(duration_min, 240))
+
+    attendee_emails = _dedupe_keep_order(entities.get("attendee_emails", []) or [])
+    attendee_names = _dedupe_keep_order(entities.get("attendee_names", []) or [])
+
+    explicit_title = (entities.get("title") or "").strip()
+    raw = (original_text or "").strip()
+    title = explicit_title or _infer_event_title(raw)
+
+    try:
+        search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)
+
+        freebusy_data = get_freebusy_service(
+            provider="google",
+            time_min=search_start.isoformat(),
+            time_max=search_end.isoformat(),
+        )
+
+        busy_blocks = freebusy_data.get("busy_blocks", [])
+
+        slots = find_available_slots(
+            busy_blocks=busy_blocks,
+            search_start=search_start,
+            search_end=search_end,
+            duration_min=duration_min,
+            tz=DEFAULT_TZ,
+        )
+
+        if slots:
+            return {
+                "action": "suggest_times",
+                "intent": intent,
+                "provider": "google",
+                "options": slots,
+                "attendee_emails": attendee_emails,
+                "attendee_names": attendee_names,
+                "duration_min": duration_min,
+                "title": title,
+                "source": "real_availability",
+                "message": f"Found {len(slots)} available slot(s) based on your calendar.",
+            }
+
+        return {
+            "action": "suggest_times",
+            "intent": intent,
+            "provider": "google",
+            "options": [],
+            "attendee_emails": attendee_emails,
+            "attendee_names": attendee_names,
+            "duration_min": duration_min,
+            "title": title,
+            "source": "real_availability",
+            "message": "No available slots found in that timeframe. Try a different day or time range.",
+        }
+
+    except Exception:
+        search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)
+        mock_busy = get_mock_busy_blocks(search_start, DEFAULT_TZ)
+
+        slots = find_available_slots(
+            busy_blocks=mock_busy,
+            search_start=search_start,
+            search_end=search_end,
+            duration_min=duration_min,
+            tz=DEFAULT_TZ,
+        )
+
+        busy_display = [
+            f"{b.get('title', 'Busy')} ({datetime.fromisoformat(b['start']).strftime('%I:%M %p')}–{datetime.fromisoformat(b['end']).strftime('%I:%M %p')})"
+            for b in mock_busy
+        ]
+
+        return {
+            "action": "suggest_times",
+            "intent": intent,
+            "provider": "mock",
+            "options": slots,
+            "attendee_emails": attendee_emails,
+            "attendee_names": attendee_names,
+            "duration_min": duration_min,
+            "title": title,
+            "source": "mock_availability",
+            "busy_blocks": mock_busy,
+            "busy_display": busy_display,
+            "message": (
+                "Google Calendar not connected — using simulated calendar. "
+                f"Busy times: {', '.join(busy_display)}. "
+                f"Found {len(slots)} available slot(s) that avoid conflicts."
+            ),
+        }
 
 
 # -----------------------
@@ -338,6 +428,9 @@ def handle_intent(intent_data: dict) -> dict:
 
     if intent == "create_event":
         return _build_create_event_decision(intent, entities, original_text)
+
+    if intent == "meeting_scheduling":
+        return _build_meeting_scheduling_decision(intent, entities, original_text)
 
     if intent == "list_emails":
         max_results = _safe_int(entities.get("max_results", 5), 5)
@@ -409,92 +502,6 @@ def handle_intent(intent_data: dict) -> dict:
             "message": "Preparing a reply draft and calendar event.",
         }
 
-    if intent == "meeting_scheduling":
-        timeframe = (entities.get("timeframe") or "").strip() or None
-        duration_min = _safe_int(entities.get("duration_min", 30), 30)
-        duration_min = max(5, min(duration_min, 240))
-        attendee_emails = _dedupe_keep_order(entities.get("attendee_emails", []) or [])
-        attendee_names = _dedupe_keep_order(entities.get("attendee_names", []) or [])
-
-        try:
-            search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)
-
-            freebusy_data = get_freebusy_service(
-                provider="google",
-                time_min=search_start.isoformat(),
-                time_max=search_end.isoformat(),
-            )
-
-            busy_blocks = freebusy_data.get("busy_blocks", [])
-
-            slots = find_available_slots(
-                busy_blocks=busy_blocks,
-                search_start=search_start,
-                search_end=search_end,
-                duration_min=duration_min,
-                tz=DEFAULT_TZ,
-            )
-
-            if slots:
-                return {
-                    "action": "suggest_times",
-                    "intent": intent,
-                    "provider": "google",
-                    "options": slots,
-                    "attendee_emails": attendee_emails,
-                    "attendee_names": attendee_names,
-                    "duration_min": duration_min,
-                    "source": "real_availability",
-                    "message": f"Found {len(slots)} available slot(s) based on your calendar.",
-                }
-
-            return {
-                "action": "suggest_times",
-                "intent": intent,
-                "provider": "google",
-                "options": [],
-                "attendee_emails": attendee_emails,
-                "attendee_names": attendee_names,
-                "duration_min": duration_min,
-                "source": "real_availability",
-                "message": "No available slots found in that timeframe. Try a different day or time range.",
-            }
-
-        except Exception:
-            search_start, search_end = timeframe_to_range(timeframe, DEFAULT_TZ)
-            mock_busy = get_mock_busy_blocks(search_start, DEFAULT_TZ)
-
-            slots = find_available_slots(
-                busy_blocks=mock_busy,
-                search_start=search_start,
-                search_end=search_end,
-                duration_min=duration_min,
-                tz=DEFAULT_TZ,
-            )
-
-            busy_display = [
-                f"{b.get('title', 'Busy')} ({datetime.fromisoformat(b['start']).strftime('%I:%M %p')}–{datetime.fromisoformat(b['end']).strftime('%I:%M %p')})"
-                for b in mock_busy
-            ]
-
-            return {
-                "action": "suggest_times",
-                "intent": intent,
-                "provider": "mock",
-                "options": slots,
-                "attendee_emails": attendee_emails,
-                "attendee_names": attendee_names,
-                "duration_min": duration_min,
-                "source": "mock_availability",
-                "busy_blocks": mock_busy,
-                "busy_display": busy_display,
-                "message": (
-                    "Google Calendar not connected — using simulated calendar. "
-                    f"Busy times: {', '.join(busy_display)}. "
-                    f"Found {len(slots)} available slot(s) that avoid conflicts."
-                ),
-            }
-
     if intent == "email_drafting":
         recipient = entities.get("recipient")
         subject = entities.get("subject") or entities.get("topic") or "Quick Follow-Up"
@@ -520,6 +527,45 @@ def handle_intent(intent_data: dict) -> dict:
             "body": body,
             "tone": tone,
             "message": "Creating Gmail draft.",
+        }
+
+    if intent == "draft_email_and_create_event":
+        recipient = entities.get("recipient")
+        subject = entities.get("subject") or entities.get("topic") or "Meeting"
+        tone = entities.get("tone") or "professional"
+        body = _build_draft_body(entities)
+
+        event_decision = _build_create_event_decision(intent, entities, original_text)
+
+        if not recipient:
+            return {
+                "action": "draft_email_and_create_event",
+                "intent": intent,
+                "provider": DEFAULT_PROVIDER,
+                "missing": ["recipient"],
+                "subject": subject,
+                "body": body,
+                "message": "I can prepare the draft and calendar event, but I need the recipient.",
+            }
+
+        return {
+            "action": "draft_email_and_create_event",
+            "intent": intent,
+            "provider": DEFAULT_PROVIDER,
+            "recipient": recipient,
+            "subject": subject,
+            "body": body,
+            "tone": tone,
+            "event_title": event_decision.get("title"),
+            "start": event_decision.get("start"),
+            "duration_min": event_decision.get("duration_min"),
+            "start_hint": event_decision.get("start_hint"),
+            "attendee_emails": event_decision.get("attendee_emails", []),
+            "attendee_names": event_decision.get("attendee_names", []),
+            "has_conflicts": event_decision.get("has_conflicts", False),
+            "conflicts": event_decision.get("conflicts", []),
+            "alternatives": event_decision.get("alternatives", []),
+            "message": "Preparing a Gmail draft and calendar event.",
         }
 
     if intent == "follow_up_reminder":
