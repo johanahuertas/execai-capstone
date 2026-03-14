@@ -382,8 +382,8 @@ def demo_show_upcoming_meetings():
 def demo_check_free_time_tomorrow():
     try:
         tomorrow = datetime.now() + timedelta(days=1)
-        start_dt = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0)
-        end_dt = tomorrow.replace(hour=17, minute=0, second=0, microsecond=0)
+        start_dt = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0).astimezone()
+        end_dt = tomorrow.replace(hour=17, minute=0, second=0, microsecond=0).astimezone()
 
         res = requests.post(
             f"{API_BASE}/integrations/google/freebusy",
