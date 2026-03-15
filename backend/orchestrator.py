@@ -15,6 +15,7 @@ from .availability import (
     get_mock_busy_blocks,
 )
 from .integrations import get_freebusy_service
+from .ai_drafts import generate_email_draft, generate_reply_draft
 
 DEFAULT_PROVIDER = "google"
 DEFAULT_TZ = ZoneInfo("America/New_York")
@@ -165,42 +166,30 @@ def _build_draft_body(entities: Dict[str, Any]) -> str:
     tone = (entities.get("tone") or "professional").lower()
     topic = entities.get("topic") or "your request"
     body_hint = entities.get("body_hint")
+    recipient = entities.get("recipient") or "there"
+    subject = entities.get("subject")
 
-    if body_hint:
-        return body_hint
-
-    if tone == "friendly":
-        return (
-            f"Hi,\n\n"
-            f"I hope you're doing well. I'm reaching out regarding {topic}. "
-            f"Let me know the best next step.\n\n"
-            f"Thanks so much,"
-        )
-
-    return (
-        f"Hello,\n\n"
-        f"I hope you are doing well. I am reaching out regarding {topic}. "
-        f"Please let me know the best next step.\n\n"
-        f"Best regards,"
+    result = generate_email_draft(
+        recipient=recipient,
+        topic=topic,
+        tone=tone,
+        body_hint=body_hint,
+        subject=subject,
     )
+
+    return result.get("body", "")
 
 
 def _build_reply_body(entities: Dict[str, Any]) -> str:
     tone = (entities.get("tone") or "neutral").lower()
     body_hint = (entities.get("body_hint") or "").strip()
 
-    if body_hint:
-        if tone == "friendly":
-            return f"Hi,\n\n{body_hint}\n\nThanks!"
-        if tone == "professional":
-            return f"Hello,\n\n{body_hint}\n\nBest regards,"
-        return body_hint
+    result = generate_reply_draft(
+        tone=tone,
+        body_hint=body_hint,
+    )
 
-    if tone == "friendly":
-        return "Hi,\n\nThanks for the update.\n\nThanks!"
-    if tone == "professional":
-        return "Hello,\n\nThank you for the update.\n\nBest regards,"
-    return "Thanks for the update."
+    return result.get("body", "")
 
 
 def _normalize_slot(slot: Dict[str, Any]) -> Dict[str, Any]:
