@@ -29,6 +29,7 @@ app.include_router(integrations_router)
 
 class ParseIntentRequest(BaseModel):
     text: str
+    provider: Optional[str] = "google"   # ← NEW: frontend sends selected provider
 
 
 class CreateEventRequest(BaseModel):
@@ -149,6 +150,9 @@ def assistant(payload: ParseIntentRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
 
+    # Provider comes from the frontend selector — default google
+    request_provider = (payload.provider or "google").strip().lower()
+
     intent_data = parse_intent_ai(text)
     decision = handle_intent(intent_data)
 
@@ -162,7 +166,10 @@ def assistant(payload: ParseIntentRequest):
 
     entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
     action = ((decision or {}).get("action") or (intent_data or {}).get("intent") or "").lower().strip()
-    provider = ((decision or {}).get("provider") or "google").lower().strip()
+
+    # Use request_provider as the source of truth for ALL actions
+    # (orchestrator may suggest a provider, but the UI selector wins)
+    provider = request_provider
 
     result = None
 
@@ -278,14 +285,14 @@ def assistant(payload: ParseIntentRequest):
                 result = {
                     "status": "needs_clarification",
                     "missing": ["recipient"],
-                    "message": "I can create the Gmail draft, but I need the recipient email address.",
+                    "message": "I can create the draft, but I need the recipient email address.",
                     "example": 'Try: "Draft an email to sarah@example.com about the proposal"',
                 }
             elif "@" not in str(recipient):
                 result = {
                     "status": "needs_clarification",
                     "missing": ["recipient_email"],
-                    "message": f'I understood the recipient as "{recipient}", but I need the full email address to create a real Gmail draft.',
+                    "message": f'I understood the recipient as "{recipient}", but I need the full email address.',
                     "example": f'Draft an email to {recipient}@example.com about the proposal',
                 }
             else:
@@ -469,7 +476,7 @@ def assistant(payload: ParseIntentRequest):
                 result = {
                     "status": "needs_clarification",
                     "missing": ["recipient_email"],
-                    "message": f'I understood the recipient as "{recipient}", but I need the full email address to create a real Gmail draft.',
+                    "message": f'I understood the recipient as "{recipient}", but I need the full email address.',
                     "example": f'Draft an email to {recipient}@example.com saying I am available tomorrow at 2pm and create the meeting',
                 }
             else:
@@ -606,8 +613,8 @@ def draft_email(req: DraftEmailRequest):
 
     body = (
         f"{greeting}\n\n"
-        f"I hope you’re doing well. I’m reaching out regarding {topic}. "
-        f"Please let me know the best next step, and if you’d like, I can share any additional details.\n\n"
+        f"I hope you're doing well. I'm reaching out regarding {topic}. "
+        f"Please let me know the best next step, and if you'd like, I can share any additional details.\n\n"
         f"{closing}"
     )
 

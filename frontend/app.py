@@ -4,7 +4,7 @@ import requests
 import streamlit as st
 from datetime import datetime, timedelta
 
-API_BASE = "http://127.0.0.1:8000"
+API_BASE = "http://localhost:8000"
 
 
 # -----------------------
@@ -113,13 +113,40 @@ if "debug_last" not in st.session_state:
 if "google_auth_url" not in st.session_state:
     st.session_state.google_auth_url = None
 
+if "outlook_auth_url" not in st.session_state:
+    st.session_state.outlook_auth_url = None
+
 if "google_status" not in st.session_state:
-    st.session_state.google_status = None
+    st.session_state.google_status = False
+
+if "outlook_status" not in st.session_state:
+    st.session_state.outlook_status = False
+
+if "calendar_provider" not in st.session_state:
+    st.session_state.calendar_provider = "google"
 
 
 # -----------------------
 # HELPERS
 # -----------------------
+
+def provider_label(provider: str) -> str:
+    provider = (provider or "").strip().lower()
+    if provider == "outlook":
+        return "Outlook"
+    if provider == "google":
+        return "Google Calendar"
+    return "Calendar"
+
+
+def provider_open_label(provider: str) -> str:
+    provider = (provider or "").strip().lower()
+    if provider == "outlook":
+        return "Open in Outlook"
+    if provider == "google":
+        return "Open in Google Calendar"
+    return "Open in Calendar"
+
 
 def format_datetime(value: str) -> str:
     if not value:
@@ -161,7 +188,7 @@ def clean_email_body(body: str, max_chars: int = 2000) -> str:
     cleaned = cleaned.replace("=20", " ")
     cleaned = cleaned.replace("=3D", "=")
 
-    cleaned = re.sub(r"[ ​⁠]+", " ", cleaned)
+    cleaned = re.sub(r"[ \u200b\u2060]+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
     if len(cleaned) > 600:
@@ -190,31 +217,53 @@ def append_assistant_message(decision: dict, result):
     )
 
 
-def check_google_status():
+def check_connection_status():
     try:
         res = requests.get(f"{API_BASE}/integrations/status", timeout=10)
         res.raise_for_status()
         data = res.json()
         st.session_state.google_status = bool(data.get("google_connected", False))
+        st.session_state.outlook_status = bool(data.get("outlook_connected", False))
     except Exception:
         st.session_state.google_status = False
+        st.session_state.outlook_status = False
 
 
-def prepare_google_connect():
+def prepare_connect(provider: str):
+    provider = (provider or "").strip().lower()
     try:
-        res = requests.get(f"{API_BASE}/integrations/google/auth-url", timeout=15)
+        res = requests.get(f"{API_BASE}/integrations/{provider}/auth-url", timeout=15, allow_redirects=False)
         res.raise_for_status()
-        data = res.json()
-        auth_url = data.get("auth_url")
 
-        if auth_url:
-            st.session_state.google_auth_url = auth_url
+        auth_url = None
+
+        if 300 <= res.status_code < 400:
+            auth_url = res.headers.get("Location")
         else:
-            st.session_state.google_auth_url = None
-            st.error("Could not generate Google authorization link.")
+            data = res.json()
+            auth_url = data.get("auth_url")
+
+        if provider == "google":
+            st.session_state.google_auth_url = auth_url
+        elif provider == "outlook":
+            st.session_state.outlook_auth_url = auth_url
+
+        if not auth_url:
+            st.error(f"Could not generate {provider.title()} authorization link.")
     except Exception as e:
-        st.session_state.google_auth_url = None
-        st.error(f"Google connect error: {e}")
+        if provider == "google":
+            st.session_state.google_auth_url = None
+        elif provider == "outlook":
+            st.session_state.outlook_auth_url = None
+        st.error(f"{provider.title()} connect error: {e}")
+
+
+def _assistant_payload(prompt: str) -> dict:
+    """Build the assistant request payload, always including the selected provider."""
+    return {
+        "text": prompt,
+        "provider": st.session_state.calendar_provider,
+    }
 
 
 def submit_prompt(prompt: str):
@@ -231,7 +280,7 @@ def submit_prompt(prompt: str):
     try:
         res = requests.post(
             f"{API_BASE}/assistant",
-            json={"text": prompt},
+            json=_assistant_payload(prompt),
             timeout=25,
         )
         res.raise_for_status()
@@ -281,10 +330,11 @@ def submit_prompt(prompt: str):
 
 def create_event_directly(title: str, start: str, duration_min: int, attendee_emails=None):
     attendee_emails = attendee_emails or []
+    provider = st.session_state.calendar_provider
 
     try:
         res = requests.post(
-            f"{API_BASE}/integrations/google/create-event",
+            f"{API_BASE}/integrations/{provider}/create-event",
             json={
                 "title": title,
                 "start": start,
@@ -301,7 +351,7 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
         decision = {
             "action": "create_event",
             "intent": "create_event",
-            "provider": "google",
+            "provider": provider,
             "title": title,
             "start": start,
             "duration_min": int(duration_min),
@@ -333,7 +383,7 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
         decision = {
             "action": "create_event",
             "intent": "create_event",
-            "provider": "google",
+            "provider": provider,
             "title": title,
             "start": start,
             "duration_min": int(duration_min),
@@ -366,49 +416,79 @@ def create_event_directly(title: str, start: str, duration_min: int, attendee_em
         st.rerun()
 
 
-def demo_show_upcoming_meetings():
+def demo_show_upcoming_meetings(provider: str):
     try:
         res = requests.post(
-            f"{API_BASE}/integrations/google/list-events",
+            f"{API_BASE}/integrations/{provider}/list-events",
             json={"days": 7},
             timeout=20,
         )
-        res.raise_for_status()
+
+        if res.status_code >= 400:
+            try:
+                return {
+                    "status": "error",
+                    "detail": res.json().get("detail", res.text),
+                }
+            except Exception:
+                return {
+                    "status": "error",
+                    "detail": res.text,
+                }
+
         return res.json()
+
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
 
-def demo_check_free_time_tomorrow():
+def demo_check_free_time_tomorrow(provider: str):
     try:
         tomorrow = datetime.now() + timedelta(days=1)
         start_dt = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0).astimezone()
         end_dt = tomorrow.replace(hour=17, minute=0, second=0, microsecond=0).astimezone()
 
+        payload = {
+            "time_min": start_dt.isoformat(),
+            "time_max": end_dt.isoformat(),
+            "calendar_ids": ["primary"] if provider == "google" else [],
+        }
+
         res = requests.post(
-            f"{API_BASE}/integrations/google/freebusy",
-            json={
-                "time_min": start_dt.isoformat(),
-                "time_max": end_dt.isoformat(),
-                "calendar_ids": ["primary"],
-            },
+            f"{API_BASE}/integrations/{provider}/freebusy",
+            json=payload,
             timeout=20,
         )
-        res.raise_for_status()
+
+        if res.status_code >= 400:
+            try:
+                return {
+                    "status": "error",
+                    "detail": res.json().get("detail", res.text),
+                }
+            except Exception:
+                return {
+                    "status": "error",
+                    "detail": res.text,
+                }
+
         return res.json()
+
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
 
 def demo_create_draft(to: str, subject: str, body: str):
+    provider = st.session_state.calendar_provider
     try:
         res = requests.post(
-            f"{API_BASE}/integrations/google/create-draft",
-            json={
-                "to": to,
-                "subject": subject,
-                "body": body,
-            },
+            f"{API_BASE}/integrations/google/create-draft" if provider == "google"
+            else f"{API_BASE}/assistant",
+            json=(
+                {"to": to, "subject": subject, "body": body}
+                if provider == "google"
+                else _assistant_payload(f"draft an email to {to} with subject {subject}: {body}")
+            ),
             timeout=20,
         )
         res.raise_for_status()
@@ -423,6 +503,7 @@ def demo_create_draft(to: str, subject: str, body: str):
 
 def render_event_list(result: dict):
     events = result.get("events", []) or []
+    provider = result.get("provider", "google")
 
     st.markdown('<div class="section-title">📅 Upcoming events</div>', unsafe_allow_html=True)
 
@@ -437,7 +518,7 @@ def render_event_list(result: dict):
         link = event.get("htmlLink")
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="pill">Google Calendar</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="pill">{provider_label(provider)}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card-title">{title}</div>', unsafe_allow_html=True)
 
         if start and end:
@@ -446,17 +527,18 @@ def render_event_list(result: dict):
             st.markdown(f"**Time:** {start}")
 
         if link:
-            st.markdown(f"[Open in Google Calendar]({link})")
+            st.markdown(f"[{provider_open_label(provider)}]({link})")
 
         st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_created_event(result: dict):
     event = result.get("event", {}) or {}
+    provider = result.get("provider", st.session_state.calendar_provider)
 
     st.markdown('<div class="section-title">✅ Event created</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="pill">Google Calendar</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="pill">{provider_label(provider)}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="card-title">{event.get("title", "(No title)")}</div>', unsafe_allow_html=True)
 
     if event.get("start"):
@@ -473,13 +555,15 @@ def render_created_event(result: dict):
             st.markdown(f"- {email} — `{status}`")
 
     if event.get("htmlLink"):
-        st.markdown(f"[Open in Google Calendar]({event.get('htmlLink')})")
+        st.markdown(f"[{provider_open_label(provider)}]({event.get('htmlLink')})")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_email_list(result: dict):
     emails = result.get("emails", []) or []
+    provider = result.get("provider", "google")
+    pill_label = "Outlook Mail" if provider == "outlook" else "Gmail"
 
     st.markdown('<div class="section-title">📧 Latest emails</div>', unsafe_allow_html=True)
 
@@ -494,7 +578,7 @@ def render_email_list(result: dict):
         snippet = email_data.get("snippet") or ""
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="pill">Gmail</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card-title">{subject}</div>', unsafe_allow_html=True)
         st.markdown(f"**From:** {sender}")
 
@@ -510,6 +594,8 @@ def render_email_list(result: dict):
 
 def render_read_email(result: dict):
     email_data = result.get("email", {}) or {}
+    provider = result.get("provider", "google")
+    pill_label = "Outlook Message" if provider == "outlook" else "Gmail Message"
 
     subject = email_data.get("subject") or "(No subject)"
     sender = email_data.get("from") or "(Unknown sender)"
@@ -520,7 +606,7 @@ def render_read_email(result: dict):
 
     st.markdown('<div class="section-title">📩 Opened email</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="pill">Gmail Message</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="card-title">{subject}</div>', unsafe_allow_html=True)
     st.markdown(f"**From:** {sender}")
 
@@ -547,10 +633,12 @@ def render_read_email(result: dict):
 def render_created_draft(result: dict):
     draft = result.get("draft", {}) or {}
     email_data = result.get("email", {}) or {}
+    provider = st.session_state.calendar_provider
+    pill_label = "Outlook Draft" if provider == "outlook" else "Gmail Draft"
 
-    st.markdown('<div class="section-title">✉️ Gmail draft created</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">✉️ Draft created</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="pill">Gmail Draft</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email_data.get('to', '')}")
     st.markdown(f"**Subject:** {email_data.get('subject', '')}")
 
@@ -567,17 +655,19 @@ def render_created_draft(result: dict):
     if draft.get("threadId"):
         st.markdown(f"**Thread ID:** `{draft.get('threadId')}`")
 
-    st.success("The draft was created successfully in Gmail.")
+    st.success("The draft was created successfully.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_reply_draft(result: dict):
     draft = result.get("draft", {}) or {}
     email_data = result.get("email", {}) or {}
+    provider = st.session_state.calendar_provider
+    pill_label = "Outlook Reply Draft" if provider == "outlook" else "Gmail Reply Draft"
 
     st.markdown('<div class="section-title">↩️ Reply draft created</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="pill">Gmail Reply Draft</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email_data.get('to', '')}")
     st.markdown(f"**Subject:** {email_data.get('subject', '')}")
 
@@ -594,7 +684,7 @@ def render_reply_draft(result: dict):
     if draft.get("threadId"):
         st.markdown(f"**Thread ID:** `{draft.get('threadId')}`")
 
-    st.success("The reply draft was created successfully in Gmail.")
+    st.success("The reply draft was created successfully.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -641,7 +731,7 @@ def render_meeting_options(decision: dict, result: dict, key_prefix: str = "sugg
         dur = opt.get("duration_min", result.get("duration_min", 30))
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="pill">Scheduling</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="pill">{provider_label(st.session_state.calendar_provider)}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card-title">{label}</div>', unsafe_allow_html=True)
         st.markdown(f"**Start:** {start}")
         st.markdown(f"**Duration:** {dur} minutes")
@@ -695,7 +785,7 @@ def render_alternatives(alternatives: list, proposed_event: dict | None = None, 
         dur = alt.get("duration_min", proposed_event.get("duration_min", 30))
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="pill">Alternative</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="pill">{provider_label(st.session_state.calendar_provider)}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card-title">{label}</div>', unsafe_allow_html=True)
         st.markdown(f"**Start:** {start}")
         st.markdown(f"**Duration:** {dur} minutes")
@@ -729,7 +819,7 @@ def render_proposed_event(proposed: dict):
 
     st.markdown('<div class="section-title">📌 Proposed event</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="pill">Not created</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="pill">{provider_label(st.session_state.calendar_provider)}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="card-title">{proposed.get("title", "(No title)")}</div>', unsafe_allow_html=True)
 
     if proposed.get("start"):
@@ -775,7 +865,6 @@ def render_reply_and_create_event(result: dict):
             render_reply_draft(reply_result)
         if calendar_result and calendar_result.get("status") == "created":
             render_created_event(calendar_result)
-
         return
 
     if status == "partial_success":
@@ -803,7 +892,6 @@ def render_reply_and_create_event(result: dict):
             render_needs_clarification(calendar_result)
         elif cal_status == "created":
             render_created_event(calendar_result)
-
         return
 
     if status == "not_found":
@@ -829,7 +917,6 @@ def render_draft_and_create_event(result: dict):
             render_created_draft(draft_result)
         if calendar_result and calendar_result.get("status") == "created":
             render_created_event(calendar_result)
-
         return
 
     if status == "partial_success":
@@ -857,7 +944,6 @@ def render_draft_and_create_event(result: dict):
             render_needs_clarification(calendar_result)
         elif cal_status == "created":
             render_created_event(calendar_result)
-
         return
 
     if status == "not_found":
@@ -970,7 +1056,7 @@ def render_assistant_result(decision: dict, result):
 # SIDEBAR
 # -----------------------
 
-check_google_status()
+check_connection_status()
 
 with st.sidebar:
     st.markdown("## ExecAI")
@@ -980,19 +1066,43 @@ with st.sidebar:
     )
     st.divider()
 
-    st.markdown("### Google connection")
+    st.markdown("### Provider")
+    st.session_state.calendar_provider = st.selectbox(
+        "Choose provider",
+        ["google", "outlook"],
+        index=0 if st.session_state.calendar_provider == "google" else 1,
+        format_func=lambda x: "Google" if x == "google" else "Outlook",
+    )
 
+    st.divider()
+
+    st.markdown("### Google connection")
     if st.session_state.google_status:
         st.success("Google is connected.")
     else:
         st.warning("Google is not connected.")
 
     if st.button("🔗 Connect Google", use_container_width=True):
-        prepare_google_connect()
+        prepare_connect("google")
         st.rerun()
 
     if st.session_state.google_auth_url:
         st.markdown(f"[Authorize Google account]({st.session_state.google_auth_url})")
+
+    st.divider()
+
+    st.markdown("### Outlook connection")
+    if st.session_state.outlook_status:
+        st.success("Outlook is connected.")
+    else:
+        st.warning("Outlook is not connected.")
+
+    if st.button("🔗 Connect Outlook", use_container_width=True):
+        prepare_connect("outlook")
+        st.rerun()
+
+    if st.session_state.outlook_auth_url:
+        st.markdown(f"[Authorize Outlook account]({st.session_state.outlook_auth_url})")
 
     st.divider()
 
@@ -1044,6 +1154,7 @@ with st.sidebar:
             "result": None,
         }
         st.session_state.google_auth_url = None
+        st.session_state.outlook_auth_url = None
         st.rerun()
 
     show_debug = st.toggle("Show debug", value=False)
@@ -1055,7 +1166,7 @@ with st.sidebar:
 
 st.markdown('<div class="main-title">ExecAI</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="subtitle">A lightweight executive assistant MVP with real Google Calendar and Gmail integrations.</div>',
+    '<div class="subtitle">A lightweight executive assistant MVP with Google Calendar, Outlook Calendar, and email integrations.</div>',
     unsafe_allow_html=True,
 )
 
@@ -1064,12 +1175,13 @@ st.markdown(
 # DEMO PANELS
 # -----------------------
 
+selected_provider = st.session_state.calendar_provider
 demo_col1, demo_col2, demo_col3 = st.columns(3)
 
 with demo_col1:
-    st.markdown("### Upcoming Meetings")
+    st.markdown(f"### Upcoming Meetings ({selected_provider.title()})")
     if st.button("Show my next meetings", use_container_width=True):
-        demo_events = demo_show_upcoming_meetings()
+        demo_events = demo_show_upcoming_meetings(selected_provider)
         if demo_events.get("status") == "error":
             st.error(f"Could not load meetings: {demo_events.get('detail', 'Unknown error')}")
         else:
@@ -1079,7 +1191,7 @@ with demo_col1:
             else:
                 for event in events[:5]:
                     st.markdown('<div class="card">', unsafe_allow_html=True)
-                    st.markdown('<div class="pill">Calendar</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="pill">{provider_label(selected_provider)}</div>', unsafe_allow_html=True)
                     st.markdown(
                         f'<div class="card-title">{event.get("title") or "(No title)"}</div>',
                         unsafe_allow_html=True,
@@ -1089,13 +1201,13 @@ with demo_col1:
                     if event.get("end"):
                         st.markdown(f"**End:** {format_datetime(event.get('end'))}")
                     if event.get("htmlLink"):
-                        st.markdown(f"[Open in Google Calendar]({event.get('htmlLink')})")
+                        st.markdown(f"[{provider_open_label(selected_provider)}]({event.get('htmlLink')})")
                     st.markdown("</div>", unsafe_allow_html=True)
 
 with demo_col2:
-    st.markdown("### Free Time Tomorrow")
+    st.markdown(f"### Free Time Tomorrow ({selected_provider.title()})")
     if st.button("Check availability tomorrow", use_container_width=True):
-        freebusy = demo_check_free_time_tomorrow()
+        freebusy = demo_check_free_time_tomorrow(selected_provider)
         if freebusy.get("status") == "error":
             st.error(f"Could not check availability: {freebusy.get('detail', 'Unknown error')}")
         else:
@@ -1112,15 +1224,15 @@ with demo_col2:
                     st.markdown("</div>", unsafe_allow_html=True)
 
 with demo_col3:
-    st.markdown("### Draft Email")
+    st.markdown(f"### Draft Email ({selected_provider.title()})")
     demo_to = st.text_input("Recipient", key="demo_to")
     demo_subject = st.text_input("Subject", key="demo_subject")
     demo_body = st.text_area("Message", key="demo_body", height=130)
 
-    if st.button("Create Gmail Draft", use_container_width=True):
+    if st.button("Create Draft", use_container_width=True):
         draft_result = demo_create_draft(demo_to, demo_subject, demo_body)
         if draft_result.get("status") == "draft_created":
-            st.success("Draft created in Gmail.")
+            st.success("Draft created.")
             render_created_draft(draft_result)
         else:
             st.error(f"Could not create draft: {draft_result.get('detail', 'Unknown error')}")
@@ -1190,7 +1302,7 @@ if prompt:
             try:
                 res = requests.post(
                     f"{API_BASE}/assistant",
-                    json={"text": prompt},
+                    json=_assistant_payload(prompt),
                     timeout=25,
                 )
                 res.raise_for_status()
