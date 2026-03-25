@@ -18,6 +18,7 @@ from .integrations import (
     read_email_service,
     _extract_email_address,
 )
+from .ai_drafts import generate_reply_draft
 
 app = FastAPI(title="ExecAI Backend")
 app.include_router(integrations_router)
@@ -309,8 +310,6 @@ def assistant(payload: ParseIntentRequest):
             if email_index is None:
                 email_index = entities.get("email_index")
 
-            body = (decision or {}).get("body") or entities.get("body_hint") or "Thanks for the update."
-
             target_email = _resolve_target_email(
                 provider=provider,
                 email_reference=email_reference,
@@ -327,6 +326,21 @@ def assistant(payload: ParseIntentRequest):
                 to_email = _extract_email_address(raw_from)
                 subject = target_email.get("subject") or "Quick Follow-Up"
                 thread_id = target_email.get("threadId") or ""
+
+                # Regenerate reply body with original email context
+                tone = (decision or {}).get("tone") or entities.get("tone") or "neutral"
+                body_hint = entities.get("body_hint") or ""
+                try:
+                    reply_data = generate_reply_draft(
+                        original_subject=subject,
+                        original_body=target_email.get("body") or target_email.get("snippet") or "",
+                        original_sender=raw_from,
+                        tone=tone,
+                        body_hint=body_hint or None,
+                    )
+                    body = reply_data.get("body") or body_hint or "Thanks for the update."
+                except Exception:
+                    body = (decision or {}).get("body") or body_hint or "Thanks for the update."
 
                 if not to_email:
                     result = {
@@ -350,7 +364,6 @@ def assistant(payload: ParseIntentRequest):
         elif action in {"reply_and_create_event"}:
             email_reference = entities.get("email_reference") or "latest"
             email_index = entities.get("email_index")
-            body = (decision or {}).get("body") or entities.get("body_hint") or "I am available at that time."
             event_title = (decision or {}).get("event_title") or entities.get("title") or "Meeting"
             event_start = (decision or {}).get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
@@ -381,6 +394,21 @@ def assistant(payload: ParseIntentRequest):
                 to_email = _extract_email_address(raw_from)
                 subject = target_email.get("subject") or "Quick Follow-Up"
                 thread_id = target_email.get("threadId") or ""
+
+                # Regenerate reply body with original email context
+                tone = (decision or {}).get("tone") or entities.get("tone") or "neutral"
+                body_hint = entities.get("body_hint") or ""
+                try:
+                    reply_data = generate_reply_draft(
+                        original_subject=subject,
+                        original_body=target_email.get("body") or target_email.get("snippet") or "",
+                        original_sender=raw_from,
+                        tone=tone,
+                        body_hint=body_hint or None,
+                    )
+                    body = reply_data.get("body") or body_hint or "I am available at that time."
+                except Exception:
+                    body = (decision or {}).get("body") or body_hint or "I am available at that time."
 
                 if not to_email:
                     result = {
