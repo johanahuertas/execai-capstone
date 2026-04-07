@@ -20,3 +20,4 @@ __pycache__/
 
 # OAuth tokens
 backend/.tokens/
+.env.save
