@@ -186,7 +186,23 @@ def assistant(payload: ParseIntentRequest):
             days = (decision or {}).get("days")
             if days is None:
                 days = entities.get("days", 7)
-            result = list_events_service(provider=provider, days=int(days))
+            timeframe = (entities.get("timeframe") or "").lower()
+            # ✅ FIX Bug E: para "today" usar start-of-day local, no UTC now
+            if timeframe == "today":
+                from zoneinfo import ZoneInfo
+                from datetime import timezone
+                tz = ZoneInfo("America/New_York")
+                local_now = datetime.now(tz)
+                start_of_day = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_of_day = local_now.replace(hour=23, minute=59, second=59, microsecond=0)
+                result = list_events_service(
+                    provider=provider,
+                    days=1,
+                    time_min_override=start_of_day.isoformat(),
+                    time_max_override=end_of_day.isoformat(),
+                )
+            else:
+                result = list_events_service(provider=provider, days=int(days))
 
         elif action in {"create_event", "calendar_create", "schedule_event"}:
             title = (decision or {}).get("title") or entities.get("title")
@@ -374,33 +390,23 @@ def assistant(payload: ParseIntentRequest):
                         "message": "I found the email, but I couldn't extract the thread ID.",
                     }
                 else:
-                    # ✅ FIX: regenerar body con contexto del email real
-                    body = _build_contextual_reply_body(target_email, body_hint, tone)
-
-                    reply_result = create_gmail_reply_draft_service(
-                        provider=provider,
-                        to=to_email,
-                        subject=subject,
-                        body=body,
-                        thread_id=thread_id,
-                    )
-
-                    if not event_start:
+                    # ✅ FIX Bug D: verificar conflicto PRIMERO antes de crear el reply
+                    if has_conflicts:
+                        # ✅ Generar el body del reply ahora para guardarlo como pending
+                        pending_body = _build_contextual_reply_body(target_email, body_hint, tone)
                         result = {
                             "status": "partial_success",
-                            "reply": reply_result,
-                            "calendar": {
-                                "status": "needs_clarification",
-                                "message": "Reply draft created, but I could not determine the event start time.",
+                            "reply": None,
+                            # ✅ pending_reply: contexto para crear el reply cuando el usuario elija una alternativa
+                            "pending_reply": {
+                                "to": to_email,
+                                "subject": subject,
+                                "body": pending_body,
+                                "thread_id": thread_id,
                             },
-                        }
-                    elif has_conflicts:
-                        result = {
-                            "status": "partial_success",
-                            "reply": reply_result,
                             "calendar": {
                                 "status": "conflict_detected",
-                                "message": "Reply draft created, but I did not create the calendar event because of a conflict.",
+                                "message": "I found a conflict at that time. Pick an alternative time before I create the reply and event.",
                                 "conflicts": conflicts,
                                 "alternatives": alternatives,
                                 "proposed_event": {
@@ -410,9 +416,36 @@ def assistant(payload: ParseIntentRequest):
                                     "attendee_emails": attendee_emails,
                                 },
                             },
-                            "message": "Reply draft created. Calendar event not created because of a conflict.",
+                            "message": "Conflict detected — choose an alternative time first.",
+                        }
+                    elif not event_start:
+                        # No conflict, but no start time — create reply only
+                        body = _build_contextual_reply_body(target_email, body_hint, tone)
+                        reply_result = create_gmail_reply_draft_service(
+                            provider=provider,
+                            to=to_email,
+                            subject=subject,
+                            body=body,
+                            thread_id=thread_id,
+                        )
+                        result = {
+                            "status": "partial_success",
+                            "reply": reply_result,
+                            "calendar": {
+                                "status": "needs_clarification",
+                                "message": "Reply draft created, but I could not determine the event start time.",
+                            },
                         }
                     else:
+                        # No conflict — create reply AND event
+                        body = _build_contextual_reply_body(target_email, body_hint, tone)
+                        reply_result = create_gmail_reply_draft_service(
+                            provider=provider,
+                            to=to_email,
+                            subject=subject,
+                            body=body,
+                            thread_id=thread_id,
+                        )
                         calendar_result = create_event_service(
                             provider=provider,
                             title=str(event_title),

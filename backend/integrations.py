@@ -100,13 +100,6 @@ class CreateReplyDraftRequest(BaseModel):
     thread_id: str
 
 
-class SendEmailRequest(BaseModel):
-    to: str
-    subject: str
-    body: str
-    thread_id: Optional[str] = None
-
-
 # -----------------------
 # TOKEN HELPERS
 # -----------------------
@@ -1224,68 +1217,6 @@ def create_gmail_reply_draft_service(
     }
 
 
-def send_email_service(
-    provider: str,
-    to: str,
-    subject: str,
-    body: str,
-    thread_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    provider = (provider or "google").strip().lower()
-    to = (to or "").strip()
-    subject = (subject or "").strip()
-    body = body or ""
-
-    if not to:
-        raise HTTPException(status_code=400, detail="Missing recipient email.")
-    if not subject:
-        raise HTTPException(status_code=400, detail="Missing email subject.")
-
-    if provider == "outlook":
-        payload: Dict[str, Any] = {
-            "message": {
-                "subject": subject,
-                "body": {"contentType": "Text", "content": body},
-                "toRecipients": [{"emailAddress": {"address": to}}],
-            },
-            "saveToSentItems": True,
-        }
-        _graph_api_post("/me/sendMail", payload)
-        return {
-            "status": "sent",
-            "email": {"to": to, "subject": subject, "body": body},
-            "message": "Email sent successfully via Outlook.",
-        }
-
-    # Google
-    raw_message = (
-        f"To: {to}\r\n"
-        f"Subject: {subject}\r\n"
-        "Content-Type: text/plain; charset=UTF-8\r\n"
-        "\r\n"
-        f"{body}"
-    )
-
-    encoded_message = base64.urlsafe_b64encode(raw_message.encode("utf-8")).decode("utf-8")
-
-    send_body: Dict[str, Any] = {"raw": encoded_message}
-    if thread_id:
-        send_body["threadId"] = thread_id
-
-    result = _google_api_post(
-        "/gmail/v1/users/me/messages/send",
-        send_body,
-    )
-
-    return {
-        "status": "sent",
-        "messageId": result.get("id"),
-        "threadId": result.get("threadId"),
-        "email": {"to": to, "subject": subject, "body": body},
-        "message": "Email sent successfully via Gmail.",
-    }
-
-
 # -----------------------
 # ENDPOINTS
 # -----------------------
@@ -1478,18 +1409,4 @@ def create_draft(payload: CreateDraftRequest):
 def create_reply_draft(payload: CreateReplyDraftRequest):
     return create_gmail_reply_draft_service(
         "google", payload.to, payload.subject, payload.body, payload.thread_id
-    )
-
-
-@router.post("/google/send-email")
-def google_send_email(payload: SendEmailRequest):
-    return send_email_service(
-        "google", payload.to, payload.subject, payload.body, payload.thread_id
-    )
-
-
-@router.post("/outlook/send-email")
-def outlook_send_email(payload: SendEmailRequest):
-    return send_email_service(
-        "outlook", payload.to, payload.subject, payload.body, payload.thread_id
     )

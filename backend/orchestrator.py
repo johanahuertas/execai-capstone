@@ -147,6 +147,26 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
         hour, minute = time_part if time_part else (9, 0)
         return datetime(y, m, d, hour, minute, tzinfo=tz)
 
+    # ✅ FIX Bug B: detectar "Dec 16", "Dec 16 2026", "December 16", "December 16 2026"
+    _month_abbr = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    natural_date = re.match(
+        r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|"
+        r"june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?"
+        r"(?:\s+(\d{4}))?",
+        tf_lower,
+    )
+    if natural_date:
+        _m = _month_abbr.get(natural_date.group(1).lower(), 1)
+        _d = int(natural_date.group(2))
+        _y = int(natural_date.group(3)) if natural_date.group(3) else now.year
+        hour, minute = parsed_time if parsed_time else (9, 0)
+        return datetime(_y, _m, _d, hour, minute, tzinfo=tz)
+
     if tf_lower == "tomorrow":
         d = (now + timedelta(days=1)).date()
         hour, minute = parsed_time if parsed_time else (10, 0)
