@@ -128,15 +128,31 @@ def _parse_time_from_text(text: str) -> Optional[Tuple[int, int]]:
 
 def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: ZoneInfo) -> datetime:
     now = datetime.now(tz)
-    tf = (timeframe or "").lower().strip()
+    tf = (timeframe or "").strip()
+    tf_lower = tf.lower()
     parsed_time = _parse_time_from_text(raw_text)
 
-    if tf == "tomorrow":
+    # ✅ FIX: detectar formato ISO "YYYY-MM-DD" que viene de _extract_timeframe en intent.py
+    iso_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", tf)
+    if iso_match:
+        y, m, d = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
+        hour, minute = parsed_time if parsed_time else (9, 0)
+        return datetime(y, m, d, hour, minute, tzinfo=tz)
+
+    # ✅ FIX: detectar "YYYY-MM-DD at HH:MM" (start_hint combinado con hora)
+    iso_time_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})\s+at\s+(.+)$", tf, re.IGNORECASE)
+    if iso_time_match:
+        y, m, d = int(iso_time_match.group(1)), int(iso_time_match.group(2)), int(iso_time_match.group(3))
+        time_part = _parse_time_from_text(iso_time_match.group(4))
+        hour, minute = time_part if time_part else (9, 0)
+        return datetime(y, m, d, hour, minute, tzinfo=tz)
+
+    if tf_lower == "tomorrow":
         d = (now + timedelta(days=1)).date()
         hour, minute = parsed_time if parsed_time else (10, 0)
         return datetime(d.year, d.month, d.day, hour, minute, tzinfo=tz)
 
-    if tf == "today":
+    if tf_lower == "today":
         if parsed_time:
             d = now.date()
             hour, minute = parsed_time
@@ -148,6 +164,16 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
 
         start = now + timedelta(hours=1)
         return start.replace(minute=0, second=0, microsecond=0)
+
+    # ✅ días de la semana (monday, tuesday, etc.)
+    days_of_week = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    if tf_lower in days_of_week:
+        target_weekday = days_of_week.index(tf_lower)
+        current_weekday = now.weekday()
+        days_ahead = (target_weekday - current_weekday) % 7 or 7
+        d = (now + timedelta(days=days_ahead)).date()
+        hour, minute = parsed_time if parsed_time else (10, 0)
+        return datetime(d.year, d.month, d.day, hour, minute, tzinfo=tz)
 
     if parsed_time:
         d = now.date()
@@ -592,5 +618,5 @@ def handle_intent(intent_data: dict) -> dict:
     return {
         "action": "unknown",
         "intent": "unknown",
-        "message": "I’m not sure how to help with that yet.",
+        "message": "I'm not sure how to help with that yet.",
     }

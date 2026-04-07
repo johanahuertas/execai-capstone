@@ -57,9 +57,6 @@ def _extract_attendee_emails(text: str) -> List[str]:
 
 
 def _extract_attendee_names(text: str) -> List[str]:
-    """
-    Extract attendee names from natural language input.
-    """
     t = (text or "").strip()
     if not t:
         return []
@@ -84,7 +81,6 @@ def _extract_attendee_names(text: str) -> List[str]:
 
 
 def _parse_name_chunk(chunk: str) -> List[str]:
-  
     boundary = re.split(
         r"\b(?:tomorrow|today|next|this|at|on|for|about|regarding|"
         r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
@@ -141,16 +137,8 @@ def _extract_participants(text: str) -> Optional[int]:
             pass
 
     word_map = {
-        "one": 1,
-        "two": 2,
-        "three": 3,
-        "four": 4,
-        "five": 5,
-        "six": 6,
-        "seven": 7,
-        "eight": 8,
-        "nine": 9,
-        "ten": 10,
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
     }
 
     for w, n in word_map.items():
@@ -181,6 +169,26 @@ def _extract_timeframe(text: str) -> Optional[str]:
         return "next month"
     if "this month" in t:
         return "this month"
+
+    # ✅ FIX 2: Detectar fechas específicas como "April 1st, 2026" o "april 1st"
+    _month_map = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    _date_match = re.search(
+        r"\b(january|february|march|april|may|june|july|august"
+        r"|september|october|november|december)"
+        r"\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})?\b",
+        t,
+        re.IGNORECASE,
+    )
+    if _date_match:
+        from datetime import date as _date
+        _month = _month_map[_date_match.group(1).lower()]
+        _day = int(_date_match.group(2))
+        _year = int(_date_match.group(3)) if _date_match.group(3) else _date.today().year
+        return f"{_year}-{_month:02d}-{_day:02d}"
 
     return None
 
@@ -262,18 +270,9 @@ def _extract_topic(text: str) -> Optional[str]:
     t = (text or "").lower()
 
     for topic in [
-        "invoice",
-        "contract",
-        "proposal",
-        "meeting",
-        "payment",
-        "follow-up",
-        "reminder",
-        "schedule",
-        "availability",
-        "budget",
-        "review",
-        "update",
+        "invoice", "contract", "proposal", "meeting", "payment",
+        "follow-up", "reminder", "schedule", "availability", "budget",
+        "review", "update",
     ]:
         if topic in t:
             return topic
@@ -403,14 +402,23 @@ def _extract_event_title(text: str) -> Optional[str]:
     )
     if m3:
         candidate = m3.group(1).strip().strip('"').strip("'")
-        candidate = re.sub(r"^(event|meeting|appointment)\b", "", candidate, flags=re.IGNORECASE).strip()
+        # ✅ FIX 1: agrega "name" al strip para que no quede en el título
+        candidate = re.sub(r"^(event|meeting|appointment|name)\b\s*", "", candidate, flags=re.IGNORECASE).strip()
         candidate = re.split(r"\bwith\b", candidate, maxsplit=1, flags=re.IGNORECASE)[0].strip()
         candidate = re.split(
-            r"\b(tomorrow|today|next week|this week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|for\s+\d+\s*(?:min|mins|minute|minutes))\b",
+            r"\b(on\s+(?:january|february|march|april|may|june|july|august|"
+            r"september|october|november|december)|"
+            r"tomorrow|today|next week|this week|monday|tuesday|wednesday|"
+            r"thursday|friday|saturday|sunday|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
+            r"for\s+\d+\s*(?:min|mins|minute|minutes|hour|hours)|"
+            r"(?:january|february|march|april|may|june|july|august|"
+            r"september|october|november|december)\s+\d{1,2})\b",
             candidate,
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0].strip(" ,.-")
+        # ✅ FIX: limpiar "for" suelto al final del título
+        candidate = re.sub(r"\s+for\s*$", "", candidate, flags=re.IGNORECASE).strip(" ,.-")
         candidate = re.sub(r"^(the|a|an)\s+", "", candidate, flags=re.IGNORECASE).strip()
 
         generic_titles = {
@@ -464,6 +472,20 @@ def _has_word(t: str, word: str) -> bool:
 def _looks_like_list_events(text: str) -> bool:
     t = (text or "").lower()
 
+    # ✅ FIX: frases explícitas de "ver mi agenda/semana/calendario"
+    explicit_phrases = [
+        "what does my schedule look like",
+        "what's on my calendar",
+        "what is on my calendar",
+        "show my schedule",
+        "show my agenda",
+        "what do i have",
+        "my week look like",
+        "my day look like",
+    ]
+    if any(p in t for p in explicit_phrases):
+        return True
+
     calendar_words = ["calendar", "events", "event", "agenda", "schedule"]
     list_words = ["list", "show", "see", "get", "view", "whats", "what's"]
 
@@ -477,20 +499,18 @@ def _looks_like_suggest_times(text: str) -> bool:
     t = (text or "").lower()
 
     explicit_phrases = [
-        "find a time",
-        "find time",
-        "suggest a time",
-        "suggest times",
-        "when are we free",
-        "when am i free",
-        "when are you free",
-        "what time works",
-        "what times work",
-        "help me schedule",
-        "availability for",
+        "find a time", "find time", "suggest a time", "suggest times",
+        "when are we free", "when am i free", "when are you free",
+        "what time works", "what times work", "help me schedule", "availability for",
     ]
     if any(p in t for p in explicit_phrases):
         return True
+
+    # ✅ FIX 3: si hay intención explícita de crear, NO es suggest_times
+    create_words = ["create", "add", "book", "make", "schedule", "put"]
+    has_create_action = any(_has_word(t, w) for w in create_words)
+    if has_create_action and any(_has_word(t, w) for w in ["meeting", "event", "appointment"]):
+        return False
 
     has_schedule_word = any(_has_word(t, w) for w in ["meet", "meeting", "schedule", "availability", "free"])
     has_timeframe = bool(_extract_timeframe(t))
@@ -523,24 +543,17 @@ def _looks_like_create_event(text: str) -> bool:
     t = (text or "").lower()
 
     create_phrases = [
-        "create event",
-        "create an event",
-        "create a calendar event",
-        "add event",
-        "add an event",
-        "schedule event",
-        "schedule an event",
-        "book event",
-        "book an event",
-        "add to my calendar",
-        "put on my calendar",
-        "create a meeting",
-        "schedule a meeting",
-        "book a meeting",
-        "add a meeting",
-        "make a meeting",
-        "create an appointment",
-        "schedule an appointment",
+        "create event", "create an event", "create a calendar event",
+        "add event", "add an event", "schedule event", "schedule an event",
+        "book event", "book an event", "add to my calendar", "put on my calendar",
+        "create a meeting", "create meeting",
+        "schedule a meeting", "book a meeting", "add a meeting",
+        "make a meeting", "create an appointment", "schedule an appointment",
+        # ✅ FIX: más variantes naturales
+        "set up a meeting", "set up a call", "set up a zoom",
+        "set up an event", "set up a standup", "set up a sync",
+        "put a meeting", "put an event", "put a call",
+        "block time", "block off time",
     ]
     if any(p in t for p in create_phrases):
         return True
@@ -568,18 +581,10 @@ def _looks_like_list_emails(text: str) -> bool:
     t = (text or "").lower()
 
     phrases = [
-        "list my emails",
-        "show my emails",
-        "show my latest emails",
-        "show my recent emails",
-        "list my recent emails",
-        "check my inbox",
-        "show my inbox",
-        "read my emails",
-        "list my latest emails",
-        "show latest emails",
-        "show recent emails",
-        "read my inbox",
+        "list my emails", "show my emails", "show my latest emails",
+        "show my recent emails", "list my recent emails", "check my inbox",
+        "show my inbox", "read my emails", "list my latest emails",
+        "show latest emails", "show recent emails", "read my inbox",
     ]
     return any(phrase in t for phrase in phrases)
 
@@ -588,14 +593,15 @@ def _looks_like_read_email(text: str) -> bool:
     t = (text or "").lower()
 
     phrases = [
-        "read my latest email",
-        "open my latest email",
-        "read the latest email",
-        "open the latest email",
-        "read my most recent email",
-        "open my most recent email",
-        "read the first email",
-        "open the first email",
+        "read my latest email", "open my latest email", "read the latest email",
+        "open the latest email", "read my most recent email",
+        "open my most recent email", "read the first email", "open the first email",
+        # ✅ FIX: más variantes naturales
+        "open the last email", "read the last email",
+        "open last email", "read last email",
+        "the last email i got", "the last email i received",
+        "last email i got", "last email i received",
+        "show me the email", "open that email",
     ]
     if any(phrase in t for phrase in phrases):
         return True
@@ -619,14 +625,10 @@ def _looks_like_reply_and_create_event(text: str) -> bool:
     )
 
     has_create_event = (
-        "create the meeting" in t
-        or "create a meeting" in t
-        or "create an event" in t
-        or "schedule the meeting" in t
-        or "schedule a meeting" in t
-        or "create the event" in t
-        or "and create" in t
-        or "and schedule" in t
+        "create the meeting" in t or "create a meeting" in t
+        or "create an event" in t or "schedule the meeting" in t
+        or "schedule a meeting" in t or "create the event" in t
+        or "and create" in t or "and schedule" in t
     )
 
     has_time_context = bool(_extract_timeframe(t) or _extract_time_string(t))
@@ -638,22 +640,14 @@ def _looks_like_draft_and_create_event(text: str) -> bool:
     t = (text or "").lower()
 
     has_draft = _looks_like_email_drafting(t) or any(
-        phrase in t for phrase in [
-            "email ",
-            "write to ",
-            "draft to ",
-        ]
+        phrase in t for phrase in ["email ", "write to ", "draft to "]
     )
 
     has_create_event = (
-        "create the meeting" in t
-        or "create a meeting" in t
-        or "create an event" in t
-        or "schedule the meeting" in t
-        or "schedule a meeting" in t
-        or "create the event" in t
-        or "and create" in t
-        or "and schedule" in t
+        "create the meeting" in t or "create a meeting" in t
+        or "create an event" in t or "schedule the meeting" in t
+        or "schedule a meeting" in t or "create the event" in t
+        or "and create" in t or "and schedule" in t
     )
 
     has_time_context = bool(_extract_timeframe(t) or _extract_time_string(t))
@@ -666,12 +660,9 @@ def _looks_like_reply_email(text: str) -> bool:
     t = (text or "").lower()
 
     phrases = [
-        "reply to my latest email",
-        "reply to the latest email",
-        "reply to my most recent email",
-        "reply to the first email",
-        "respond to my latest email",
-        "respond to the latest email",
+        "reply to my latest email", "reply to the latest email",
+        "reply to my most recent email", "reply to the first email",
+        "respond to my latest email", "respond to the latest email",
     ]
     if any(phrase in t for phrase in phrases):
         return True
@@ -686,14 +677,13 @@ def _looks_like_email_drafting(text: str) -> bool:
     t = (text or "").lower()
 
     drafting_phrases = [
-        "draft an email",
-        "draft email",
-        "write an email",
-        "write email",
-        "compose an email",
-        "compose email",
-        "create a draft",
-        "create draft",
+        "draft an email", "draft email", "write an email", "write email",
+        "compose an email", "compose email", "create a draft", "create draft",
+        # ✅ FIX: más variantes naturales
+        "send an email", "send a message", "send message",
+        "shoot an email", "shoot a message",
+        "need to send", "i need to send",
+        "reach out to", "message to",
     ]
     return any(p in t for p in drafting_phrases)
 
@@ -856,17 +846,9 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
     entities = obj.get("entities") if isinstance(obj, dict) else None
 
     allowed = {
-        "meeting_scheduling",
-        "email_drafting",
-        "draft_email_and_create_event",
-        "follow_up_reminder",
-        "list_events",
-        "create_event",
-        "list_emails",
-        "read_email",
-        "reply_email",
-        "reply_and_create_event",
-        "unknown",
+        "meeting_scheduling", "email_drafting", "draft_email_and_create_event",
+        "follow_up_reminder", "list_events", "create_event", "list_emails",
+        "read_email", "reply_email", "reply_and_create_event", "unknown",
     }
 
     if intent not in allowed:
@@ -964,16 +946,52 @@ def _parse_intent_llm(text: str) -> Dict[str, Any]:
     if not _client:
         raise RuntimeError("LLM not available")
 
-    system = (
-        "You are an intent parser for an executive assistant. "
-        "Return ONLY valid JSON with keys: intent, entities. "
-        "Allowed intents: meeting_scheduling, email_drafting, draft_email_and_create_event, "
-        "follow_up_reminder, list_events, create_event, list_emails, read_email, "
-        "reply_email, reply_and_create_event, unknown. "
-        "entities should be an object. "
-        "If unsure, use intent='unknown' and entities={}. "
-        "Do NOT include extra text."
-    )
+    system = """You are an intent parser for an AI executive assistant. 
+Return ONLY valid JSON with exactly two keys: "intent" and "entities". No extra text, no markdown, no backticks.
+
+ALLOWED INTENTS:
+- create_event: user wants to create/schedule/add a calendar event or meeting
+- meeting_scheduling: user wants to FIND a free time or check availability (no specific time given)
+- list_events: user wants to see/show/list their calendar or upcoming events
+- list_emails: user wants to see/show/list their emails or inbox
+- read_email: user wants to read/open a specific email
+- reply_email: user wants to reply to an email
+- email_drafting: user wants to draft/write/compose an email
+- reply_and_create_event: user wants to reply to an email AND create a calendar event
+- draft_email_and_create_event: user wants to draft an email AND create a calendar event
+- follow_up_reminder: user wants a follow-up or reminder
+- unknown: anything else
+
+ENTITY EXTRACTION RULES:
+- title: the event/meeting name. Strip words like "create", "meeting", "event", "name", "called", "schedule". Keep only the actual title.
+- timeframe: ALWAYS use ISO format "YYYY-MM-DD" for specific dates. Use "tomorrow", "today", "next week", day names for relative dates.
+- start_hint: combine date and time if both present, e.g. "2026-12-16 at 2pm"
+- duration_min: integer minutes (default 30)
+- attendee_emails: array of email addresses found
+- recipient: email address or name for email drafts
+- body_hint: the message content the user wants to say (text inside quotes or after "saying")
+- tone: "professional", "friendly", or "neutral"
+- email_reference: "latest", "first", or "indexed"
+- max_results: integer for list operations
+
+EXAMPLES:
+Input: "create meeting johanas birthday December 16 2026 at 2pm"
+Output: {"intent": "create_event", "entities": {"title": "johanas birthday", "timeframe": "2026-12-16", "start_hint": "2026-12-16 at 2pm", "duration_min": 30}}
+
+Input: "schedule a budget review with sarah@example.com tomorrow at 11am for 45 minutes"
+Output: {"intent": "create_event", "entities": {"title": "budget review", "timeframe": "tomorrow", "start_hint": "tomorrow at 11am", "duration_min": 45, "attendee_emails": ["sarah@example.com"]}}
+
+Input: "show my emails"
+Output: {"intent": "list_emails", "entities": {"max_results": 5}}
+
+Input: "reply to my latest email saying thanks for the info"
+Output: {"intent": "reply_email", "entities": {"email_reference": "latest", "body_hint": "thanks for the info", "tone": "neutral"}}
+
+Input: "find a time to meet tomorrow"
+Output: {"intent": "meeting_scheduling", "entities": {"timeframe": "tomorrow", "duration_min": 30}}
+
+If unsure use intent="unknown" and entities={}.
+"""
 
     resp = _client.chat.completions.create(
         model=_DEFAULT_MODEL,

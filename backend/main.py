@@ -18,6 +18,8 @@ from .integrations import (
     read_email_service,
     _extract_email_address,
 )
+# ✅ FIX: importar generate_reply_draft para regenerar el body con contexto real del email
+from .ai_drafts import generate_reply_draft
 
 app = FastAPI(title="ExecAI Backend")
 app.include_router(integrations_router)
@@ -29,7 +31,7 @@ app.include_router(integrations_router)
 
 class ParseIntentRequest(BaseModel):
     text: str
-    provider: Optional[str] = "google"   # ← NEW: frontend sends selected provider
+    provider: Optional[str] = "google"
 
 
 class CreateEventRequest(BaseModel):
@@ -53,17 +55,13 @@ class DraftEmailRequest(BaseModel):
 def _dedupe_keep_order(items: List[str]) -> List[str]:
     seen = set()
     out: List[str] = []
-
     for item in items or []:
         val = str(item).strip()
         key = val.lower()
-
         if not val or key in seen:
             continue
-
         seen.add(key)
         out.append(val)
-
     return out
 
 
@@ -83,17 +81,14 @@ def _resolve_target_email(
         emails = latest_list.get("emails", []) or []
         if not emails:
             return None
-
         message_id = emails[0].get("id")
         if not message_id:
             return None
-
         read_result = read_email_service(provider=provider, message_id=message_id)
         return (read_result or {}).get("email") or None
 
     if email_reference in {"indexed", "first"}:
         index = 1
-
         if email_reference == "first":
             index = 1
         elif email_index:
@@ -109,18 +104,35 @@ def _resolve_target_email(
             primary_only=True,
         )
         emails = email_list.get("emails", []) or []
-
         if len(emails) < index:
             return None
-
         message_id = emails[index - 1].get("id")
         if not message_id:
             return None
-
         read_result = read_email_service(provider=provider, message_id=message_id)
         return (read_result or {}).get("email") or None
 
     return None
+
+
+# ✅ FIX: nueva función que regenera el body del reply usando el email real
+def _build_contextual_reply_body(
+    target_email: Dict[str, Any],
+    body_hint: Optional[str],
+    tone: str,
+) -> str:
+    original_subject = target_email.get("subject") or ""
+    original_body = target_email.get("body") or target_email.get("snippet") or ""
+    original_sender = target_email.get("from") or ""
+
+    result = generate_reply_draft(
+        original_subject=original_subject,
+        original_body=original_body,
+        original_sender=original_sender,
+        tone=tone,
+        body_hint=body_hint,
+    )
+    return result.get("body") or body_hint or "Thanks for the update."
 
 
 # -----------------------
@@ -150,7 +162,6 @@ def assistant(payload: ParseIntentRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
 
-    # Provider comes from the frontend selector — default google
     request_provider = (payload.provider or "google").strip().lower()
 
     intent_data = parse_intent_ai(text)
@@ -166,9 +177,6 @@ def assistant(payload: ParseIntentRequest):
 
     entities: Dict[str, Any] = (intent_data or {}).get("entities") or {}
     action = ((decision or {}).get("action") or (intent_data or {}).get("intent") or "").lower().strip()
-
-    # Use request_provider as the source of truth for ALL actions
-    # (orchestrator may suggest a provider, but the UI selector wins)
     provider = request_provider
 
     result = None
@@ -178,23 +186,15 @@ def assistant(payload: ParseIntentRequest):
             days = (decision or {}).get("days")
             if days is None:
                 days = entities.get("days", 7)
-
-            result = list_events_service(
-                provider=provider,
-                days=int(days),
-            )
+            result = list_events_service(provider=provider, days=int(days))
 
         elif action in {"create_event", "calendar_create", "schedule_event"}:
             title = (decision or {}).get("title") or entities.get("title")
             start = (decision or {}).get("start") or entities.get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
-            attendee_emails = (
-                (decision or {}).get("attendee_emails")
-                or entities.get("attendee_emails")
-                or []
+            attendee_emails = _dedupe_keep_order(
+                (decision or {}).get("attendee_emails") or entities.get("attendee_emails") or []
             )
-            attendee_emails = _dedupe_keep_order(attendee_emails)
-
             has_conflicts = bool((decision or {}).get("has_conflicts", False))
             conflicts = (decision or {}).get("conflicts", []) or []
             alternatives = (decision or {}).get("alternatives", []) or []
@@ -242,10 +242,7 @@ def assistant(payload: ParseIntentRequest):
             }
 
         elif action in {"list_emails", "get_emails", "show_inbox"}:
-            max_results = (decision or {}).get("max_results")
-            if max_results is None:
-                max_results = entities.get("max_results", 5)
-
+            max_results = (decision or {}).get("max_results") or entities.get("max_results", 5)
             result = list_emails_service(
                 provider=provider,
                 max_results=int(max_results),
@@ -255,9 +252,7 @@ def assistant(payload: ParseIntentRequest):
 
         elif action in {"read_email", "open_email"}:
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
-            email_index = (decision or {}).get("email_index")
-            if email_index is None:
-                email_index = entities.get("email_index")
+            email_index = (decision or {}).get("email_index") or entities.get("email_index")
 
             target_email = _resolve_target_email(
                 provider=provider,
@@ -266,15 +261,9 @@ def assistant(payload: ParseIntentRequest):
             )
 
             if not target_email:
-                result = {
-                    "status": "not_found",
-                    "message": "I couldn't find the requested email.",
-                }
+                result = {"status": "not_found", "message": "I couldn't find the requested email."}
             else:
-                result = {
-                    "provider": provider,
-                    "email": target_email,
-                }
+                result = {"provider": provider, "email": target_email}
 
         elif action in {"create_draft", "draft_email"}:
             recipient = (decision or {}).get("recipient") or entities.get("recipient")
@@ -305,11 +294,9 @@ def assistant(payload: ParseIntentRequest):
 
         elif action in {"reply_email", "create_reply_draft"}:
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
-            email_index = (decision or {}).get("email_index")
-            if email_index is None:
-                email_index = entities.get("email_index")
-
-            body = (decision or {}).get("body") or entities.get("body_hint") or "Thanks for the update."
+            email_index = (decision or {}).get("email_index") or entities.get("email_index")
+            body_hint = entities.get("body_hint") or ""
+            tone = entities.get("tone") or "neutral"
 
             target_email = _resolve_target_email(
                 provider=provider,
@@ -318,10 +305,7 @@ def assistant(payload: ParseIntentRequest):
             )
 
             if not target_email:
-                result = {
-                    "status": "not_found",
-                    "message": "No email found to reply to.",
-                }
+                result = {"status": "not_found", "message": "No email found to reply to."}
             else:
                 raw_from = target_email.get("from") or ""
                 to_email = _extract_email_address(raw_from)
@@ -339,28 +323,28 @@ def assistant(payload: ParseIntentRequest):
                         "message": "I found the email, but I couldn't extract the thread ID.",
                     }
                 else:
+                    # ✅ FIX: regenerar el body con el contenido real del email
+                    body = _build_contextual_reply_body(target_email, body_hint, tone)
+
                     result = create_gmail_reply_draft_service(
                         provider=provider,
                         to=to_email,
                         subject=subject,
-                        body=str(body),
+                        body=body,
                         thread_id=thread_id,
                     )
 
         elif action in {"reply_and_create_event"}:
             email_reference = entities.get("email_reference") or "latest"
             email_index = entities.get("email_index")
-            body = (decision or {}).get("body") or entities.get("body_hint") or "I am available at that time."
+            body_hint = entities.get("body_hint") or ""
+            tone = entities.get("tone") or "neutral"
             event_title = (decision or {}).get("event_title") or entities.get("title") or "Meeting"
             event_start = (decision or {}).get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
-            attendee_emails = (
-                (decision or {}).get("attendee_emails")
-                or entities.get("attendee_emails")
-                or []
+            attendee_emails = _dedupe_keep_order(
+                (decision or {}).get("attendee_emails") or entities.get("attendee_emails") or []
             )
-            attendee_emails = _dedupe_keep_order(attendee_emails)
-
             has_conflicts = bool((decision or {}).get("has_conflicts", False))
             conflicts = (decision or {}).get("conflicts", []) or []
             alternatives = (decision or {}).get("alternatives", []) or []
@@ -372,10 +356,7 @@ def assistant(payload: ParseIntentRequest):
             )
 
             if not target_email:
-                result = {
-                    "status": "not_found",
-                    "message": "No email found to reply to.",
-                }
+                result = {"status": "not_found", "message": "No email found to reply to."}
             else:
                 raw_from = target_email.get("from") or ""
                 to_email = _extract_email_address(raw_from)
@@ -393,11 +374,14 @@ def assistant(payload: ParseIntentRequest):
                         "message": "I found the email, but I couldn't extract the thread ID.",
                     }
                 else:
+                    # ✅ FIX: regenerar body con contexto del email real
+                    body = _build_contextual_reply_body(target_email, body_hint, tone)
+
                     reply_result = create_gmail_reply_draft_service(
                         provider=provider,
                         to=to_email,
                         subject=subject,
-                        body=str(body),
+                        body=body,
                         thread_id=thread_id,
                     )
 
@@ -436,7 +420,6 @@ def assistant(payload: ParseIntentRequest):
                             duration_min=int(duration_min),
                             attendees=attendee_emails,
                         )
-
                         result = {
                             "status": "success",
                             "reply": reply_result,
@@ -451,13 +434,9 @@ def assistant(payload: ParseIntentRequest):
             event_title = (decision or {}).get("event_title") or entities.get("title") or "Meeting"
             event_start = (decision or {}).get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
-            attendee_emails = (
-                (decision or {}).get("attendee_emails")
-                or entities.get("attendee_emails")
-                or []
+            attendee_emails = _dedupe_keep_order(
+                (decision or {}).get("attendee_emails") or entities.get("attendee_emails") or []
             )
-            attendee_emails = _dedupe_keep_order(attendee_emails)
-
             if recipient and recipient not in attendee_emails:
                 attendee_emails = _dedupe_keep_order(attendee_emails + [str(recipient)])
 
@@ -523,7 +502,6 @@ def assistant(payload: ParseIntentRequest):
                         duration_min=int(duration_min),
                         attendees=attendee_emails,
                     )
-
                     result = {
                         "status": "success",
                         "draft": draft_result,
@@ -538,23 +516,11 @@ def assistant(payload: ParseIntentRequest):
             }
 
     except HTTPException as e:
-        result = {
-            "status": "error",
-            "where": "integrations",
-            "detail": e.detail,
-        }
+        result = {"status": "error", "where": "integrations", "detail": e.detail}
     except Exception as e:
-        result = {
-            "status": "error",
-            "where": "assistant",
-            "detail": f"{type(e).__name__}: {str(e)}",
-        }
+        result = {"status": "error", "where": "assistant", "detail": f"{type(e).__name__}: {str(e)}"}
 
-    return {
-        "intent_data": intent_data,
-        "decision": decision,
-        "result": result,
-    }
+    return {"intent_data": intent_data, "decision": decision, "result": result}
 
 
 # -----------------------
@@ -573,12 +539,7 @@ def suggest_times(payload: ParseIntentRequest):
         {"label": "Option B", "start": (now + timedelta(days=2, hours=14)).isoformat(), "duration_min": 30},
         {"label": "Option C", "start": (now + timedelta(days=3, hours=9)).isoformat(), "duration_min": 30},
     ]
-
-    return {
-        "intent": "meeting_scheduling",
-        "options": options,
-        "provider": "mock",
-    }
+    return {"intent": "meeting_scheduling", "options": options, "provider": "mock"}
 
 
 @app.post("/create-event")
@@ -601,7 +562,6 @@ def draft_email(req: DraftEmailRequest):
     recipient = (req.recipient or "the recipient").strip()
     topic = (req.topic or "your request").strip()
     tone = (req.tone or "professional").strip().lower()
-
     subject = f"Regarding {topic.title()}" if topic else "Quick Follow-Up"
 
     if tone == "friendly":
@@ -614,18 +574,12 @@ def draft_email(req: DraftEmailRequest):
     body = (
         f"{greeting}\n\n"
         f"I hope you're doing well. I'm reaching out regarding {topic}. "
-        f"Please let me know the best next step, and if you'd like, I can share any additional details.\n\n"
+        f"Please let me know the best next step.\n\n"
         f"{closing}"
     )
 
     return {
         "status": "drafted",
-        "email": {
-            "to": recipient,
-            "subject": subject,
-            "body": body,
-            "tone": tone,
-            "provider": "mock",
-        },
+        "email": {"to": recipient, "subject": subject, "body": body, "tone": tone, "provider": "mock"},
         "message": "Email draft generated (mock).",
     }

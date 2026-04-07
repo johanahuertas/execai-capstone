@@ -30,7 +30,6 @@ def generate_email_draft(
     body_hint: Optional[str] = None,
     subject: Optional[str] = None,
 ) -> dict:
-   
     if _client:
         try:
             return _generate_with_ai(
@@ -59,7 +58,6 @@ def generate_reply_draft(
     tone: str = "neutral",
     body_hint: Optional[str] = None,
 ) -> dict:
- 
     if _client:
         try:
             return _generate_reply_with_ai(
@@ -75,13 +73,14 @@ def generate_reply_draft(
     return _generate_reply_with_template(
         tone=tone,
         body_hint=body_hint,
+        original_subject=original_subject,
+        original_sender=original_sender,
     )
 
 
 # -----------------------
 # AI GENERATION
 # -----------------------
-
 
 def _generate_with_ai(
     recipient: str,
@@ -99,14 +98,14 @@ def _generate_with_ai(
         "Match the requested tone exactly."
     )
 
-    user_prompt = f"Write an email with the following details:\n"
+    user_prompt = "Write an email with the following details:\n"
     user_prompt += f"- Recipient: {recipient}\n"
     user_prompt += f"- Tone: {tone}\n"
 
     if topic:
         user_prompt += f"- Topic: {topic}\n"
     if body_hint:
-        user_prompt += f"- Key message: {body_hint}\n"
+        user_prompt += f"- Key message to include: {body_hint}\n"
     if subject:
         user_prompt += f"- Subject context: {subject}\n"
 
@@ -127,12 +126,7 @@ def _generate_with_ai(
     elif not subject:
         subject = "Quick Follow-Up"
 
-    return {
-        "subject": subject,
-        "body": body,
-        "tone": tone,
-        "source": "ai_groq",
-    }
+    return {"subject": subject, "body": body, "tone": tone, "source": "ai_groq"}
 
 
 def _generate_reply_with_ai(
@@ -144,27 +138,31 @@ def _generate_reply_with_ai(
 ) -> dict:
     system_prompt = (
         "You are an executive assistant that writes email replies.\n"
-        "Write a concise, contextual reply based on the original email.\n"
-        "Return ONLY the reply body text — no subject line, no metadata.\n"
-        "Do not include 'Subject:', 'To:', or 'Re:' headers in your response.\n"
-        "Keep the reply brief (2-4 sentences) unless more detail is needed.\n"
+        "Write a concise, contextual reply based on the original email provided.\n"
+        "Return ONLY the reply body text — no subject line, no metadata, no headers.\n"
+        "Do not start with 'Subject:', 'To:', or 'Re:'.\n"
+        "Keep the reply brief (2-5 sentences).\n"
+        "If no original email is provided, write a polite, generic acknowledgment.\n"
         "Match the requested tone exactly."
     )
 
-    user_prompt = "Write a reply to this email:\n"
+    # ✅ FIX: build a rich prompt using all available email context
+    user_prompt = "Write a reply to this email:\n\n"
 
     if original_sender:
-        user_prompt += f"- From: {original_sender}\n"
+        user_prompt += f"From: {original_sender}\n"
     if original_subject:
-        user_prompt += f"- Subject: {original_subject}\n"
+        user_prompt += f"Subject: {original_subject}\n"
     if original_body:
-        truncated = original_body[:500] + ("..." if len(original_body) > 500 else "")
-        user_prompt += f"- Original message: {truncated}\n"
+        truncated = original_body[:800] + ("..." if len(original_body) > 800 else "")
+        user_prompt += f"\nOriginal message:\n{truncated}\n"
+    else:
+        user_prompt += "\n(Original message not available — write a polite acknowledgment)\n"
 
-    user_prompt += f"\nReply tone: {tone}\n"
+    user_prompt += f"\nTone: {tone}\n"
 
     if body_hint:
-        user_prompt += f"Key message to include: {body_hint}\n"
+        user_prompt += f"Key message to include in the reply: {body_hint}\n"
 
     resp = _client.chat.completions.create(
         model=_DEFAULT_MODEL,
@@ -173,22 +171,16 @@ def _generate_reply_with_ai(
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.7,
-        max_tokens=300,
+        max_tokens=400,
     )
 
     body = (resp.choices[0].message.content or "").strip()
-
-    return {
-        "body": body,
-        "tone": tone,
-        "source": "ai_groq",
-    }
+    return {"body": body, "tone": tone, "source": "ai_groq"}
 
 
 # -----------------------
 # TEMPLATE FALLBACK
 # -----------------------
-
 
 def _generate_with_template(
     recipient: str,
@@ -208,46 +200,55 @@ def _generate_with_template(
     elif tone == "friendly":
         body = (
             f"Hi,\n\n"
-            f"I hope you're doing well. I'm reaching out regarding {topic}. "
+            f"I hope you're doing well! I'm reaching out regarding {topic}. "
             f"Let me know the best next step.\n\n"
-            f"Thanks so much,"
+            f"Thanks,"
         )
     else:
         body = (
             f"Hello,\n\n"
-            f"I hope you are doing well. I am reaching out regarding {topic}. "
-            f"Please let me know the best next step.\n\n"
+            f"I hope this message finds you well. I am writing regarding {topic}. "
+            f"Please let me know how you would like to proceed.\n\n"
             f"Best regards,"
         )
 
-    return {
-        "subject": subject,
-        "body": body,
-        "tone": tone,
-        "source": "template",
-    }
+    return {"subject": subject, "body": body, "tone": tone, "source": "template"}
 
 
 def _generate_reply_with_template(
     tone: str,
     body_hint: Optional[str],
+    original_subject: Optional[str] = None,
+    original_sender: Optional[str] = None,
 ) -> dict:
-    if body_hint:
-        if tone == "friendly":
-            body = f"Hi,\n\n{body_hint}\n\nThanks!"
-        elif tone == "professional":
-            body = f"Hello,\n\n{body_hint}\n\nBest regards,"
-        else:
-            body = body_hint
-    elif tone == "friendly":
-        body = "Hi,\n\nThanks for the update.\n\nThanks!"
-    elif tone == "professional":
-        body = "Hello,\n\nThank you for the update.\n\nBest regards,"
-    else:
-        body = "Thanks for the update."
+    # ✅ FIX: use original email context in template too when available
+    subject_ref = f" regarding '{original_subject}'" if original_subject else ""
+    sender_ref = original_sender.split("<")[0].strip() if original_sender else ""
+    greeting = f"Hi {sender_ref}," if sender_ref else "Hi,"
 
-    return {
-        "body": body,
-        "tone": tone,
-        "source": "template",
-    }
+    if body_hint:
+        if tone == "professional":
+            body = f"Hello,\n\n{body_hint}\n\nPlease let me know if you have any questions.\n\nBest regards,"
+        else:
+            body = f"{greeting}\n\n{body_hint}\n\nThanks!"
+    elif tone == "professional":
+        body = (
+            f"Hello,\n\n"
+            f"Thank you for your message{subject_ref}. "
+            f"I appreciate you reaching out and will follow up shortly.\n\n"
+            f"Best regards,"
+        )
+    elif tone == "friendly":
+        body = (
+            f"{greeting}\n\n"
+            f"Thanks for the update{subject_ref}! "
+            f"I'll get back to you soon.\n\nThanks!"
+        )
+    else:
+        body = (
+            f"{greeting}\n\n"
+            f"Thank you for your email{subject_ref}. "
+            f"I'll review this and respond shortly.\n\nBest,"
+        )
+
+    return {"body": body, "tone": tone, "source": "template"}
