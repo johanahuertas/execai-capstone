@@ -636,26 +636,50 @@ def render_created_draft(result: dict):
     provider = st.session_state.calendar_provider
     pill_label = "Outlook Draft" if provider == "outlook" else "Gmail Draft"
 
+    draft_id = draft.get("id", "x")
+    sent_key = f"sent_draft_{draft_id}"
+
     st.markdown('<div class="section-title">✉️ Draft created</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email_data.get('to', '')}")
     st.markdown(f"**Subject:** {email_data.get('subject', '')}")
 
-    st.text_area(
-        "Draft body",
-        value=email_data.get("body", ""),
-        height=180,
-        disabled=True,
-        key=f"draft_body_{draft.get('id', 'x')}",
-    )
+    if st.session_state.get(sent_key):
+        st.text_area(
+            "Draft body",
+            value=email_data.get("body", ""),
+            height=180,
+            disabled=True,
+            key=f"draft_body_{draft_id}",
+        )
+        st.success("Email sent successfully!")
+    else:
+        edited_body = st.text_area(
+            "Draft body (edit before sending)",
+            value=email_data.get("body", ""),
+            height=180,
+            key=f"draft_body_{draft_id}",
+        )
 
-    if draft.get("id"):
-        st.markdown(f"**Draft ID:** `{draft.get('id')}`")
-    if draft.get("threadId"):
-        st.markdown(f"**Thread ID:** `{draft.get('threadId')}`")
+        if st.button("📤 Send Email", key=f"send_draft_{draft_id}"):
+            try:
+                send_res = requests.post(
+                    f"{API_BASE}/integrations/{provider}/send-email",
+                    json={
+                        "to": email_data.get("to", ""),
+                        "subject": email_data.get("subject", ""),
+                        "body": edited_body,
+                        "thread_id": draft.get("threadId"),
+                    },
+                    timeout=15,
+                )
+                send_res.raise_for_status()
+                st.session_state[sent_key] = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to send: {e}")
 
-    st.success("The draft was created successfully.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -665,26 +689,50 @@ def render_reply_draft(result: dict):
     provider = st.session_state.calendar_provider
     pill_label = "Outlook Reply Draft" if provider == "outlook" else "Gmail Reply Draft"
 
+    draft_id = draft.get("id", "x")
+    sent_key = f"sent_reply_{draft_id}"
+
     st.markdown('<div class="section-title">↩️ Reply draft created</div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
     st.markdown(f"**To:** {email_data.get('to', '')}")
     st.markdown(f"**Subject:** {email_data.get('subject', '')}")
 
-    st.text_area(
-        "Reply body",
-        value=email_data.get("body", ""),
-        height=180,
-        disabled=True,
-        key=f"reply_body_{draft.get('id', 'x')}",
-    )
+    if st.session_state.get(sent_key):
+        st.text_area(
+            "Reply body",
+            value=email_data.get("body", ""),
+            height=180,
+            disabled=True,
+            key=f"reply_body_{draft_id}",
+        )
+        st.success("Reply sent successfully!")
+    else:
+        edited_body = st.text_area(
+            "Reply body (edit before sending)",
+            value=email_data.get("body", ""),
+            height=180,
+            key=f"reply_body_{draft_id}",
+        )
 
-    if draft.get("id"):
-        st.markdown(f"**Draft ID:** `{draft.get('id')}`")
-    if draft.get("threadId"):
-        st.markdown(f"**Thread ID:** `{draft.get('threadId')}`")
+        if st.button("📤 Send Reply", key=f"send_reply_{draft_id}"):
+            try:
+                send_res = requests.post(
+                    f"{API_BASE}/integrations/{provider}/send-email",
+                    json={
+                        "to": email_data.get("to", ""),
+                        "subject": email_data.get("subject", ""),
+                        "body": edited_body,
+                        "thread_id": draft.get("threadId"),
+                    },
+                    timeout=15,
+                )
+                send_res.raise_for_status()
+                st.session_state[sent_key] = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to send: {e}")
 
-    st.success("The reply draft was created successfully.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
