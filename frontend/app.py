@@ -6,880 +6,682 @@ from datetime import datetime, timedelta
 
 API_BASE = "http://localhost:8000"
 
-st.set_page_config(page_title="ExecAI", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="ExecAI", page_icon="🤖", layout="centered")
 
+# Minimal CSS — only things Streamlit can't do natively
 st.markdown("""
 <style>
-    .main-title { font-size: 2.2rem; font-weight: 800; margin-bottom: 0.2rem; letter-spacing: -0.02em; }
-    .subtitle { color: #6b7280; font-size: 1rem; margin-bottom: 1.2rem; }
-    .section-title { font-size: 1.2rem; font-weight: 700; margin-top: 0.25rem; margin-bottom: 0.8rem; }
-    .card { border: 1px solid #e5e7eb; border-radius: 16px; padding: 1rem 1rem 0.85rem 1rem; margin-bottom: 0.85rem; background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-    .card-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 0.35rem; color: #111827; }
-    .muted { color: #6b7280; font-size: 0.92rem; }
-    .pill { display: inline-block; padding: 0.22rem 0.65rem; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 0.78rem; font-weight: 700; margin-bottom: 0.75rem; }
-    .sidebar-note { color: #6b7280; font-size: 0.92rem; }
-    .empty-state { border: 1px dashed #d1d5db; border-radius: 16px; padding: 1rem 1.1rem; background: #fafafa; color: #374151; margin-top: 0.5rem; }
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    .empty-hint { color: #9ca3af; font-size: 0.9rem; line-height: 2; }
 </style>
 """, unsafe_allow_html=True)
 
-# -----------------------
-# SESSION STATE
-# -----------------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "debug_last" not in st.session_state:
-    st.session_state.debug_last = {"intent_data": None, "decision": None, "result": None}
-if "google_auth_url" not in st.session_state:
-    st.session_state.google_auth_url = None
-if "outlook_auth_url" not in st.session_state:
-    st.session_state.outlook_auth_url = None
-if "google_status" not in st.session_state:
-    st.session_state.google_status = False
-if "outlook_status" not in st.session_state:
-    st.session_state.outlook_status = False
-if "calendar_provider" not in st.session_state:
-    st.session_state.calendar_provider = "google"
+
+# ── Session state ──────────────────────────────────────────────────────────
+for k, v in [("messages", []), ("debug_last", {}), ("google_auth_url", None),
+             ("outlook_auth_url", None), ("google_status", False),
+             ("outlook_status", False), ("provider", "google")]:
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
-# -----------------------
-# HELPERS
-# -----------------------
-def provider_label(provider: str) -> str:
-    p = (provider or "").strip().lower()
-    return "Outlook" if p == "outlook" else "Google Calendar" if p == "google" else "Calendar"
+# ── Utilities ──────────────────────────────────────────────────────────────
+def prov():     return st.session_state.provider
+def prov_name(p=None): p = p or prov(); return "Outlook" if p == "outlook" else "Google"
 
-def provider_open_label(provider: str) -> str:
-    p = (provider or "").strip().lower()
-    return "Open in Outlook" if p == "outlook" else "Open in Google Calendar" if p == "google" else "Open in Calendar"
-
-def format_datetime(value: str) -> str:
-    if not value:
-        return ""
+def fmt(value: str) -> str:
+    if not value: return "—"
     try:
         from zoneinfo import ZoneInfo
-        dt = datetime.fromisoformat(value)
-        dt = dt.astimezone(ZoneInfo("America/New_York"))
-        return dt.strftime("%a, %b %d · %I:%M %p %Z")
+        return datetime.fromisoformat(value).astimezone(ZoneInfo("America/New_York")).strftime("%a %b %d · %I:%M %p %Z")
     except Exception:
         return value
 
-def clean_email_body(body: str, max_chars: int = 2000) -> str:
-    if not body:
-        return ""
-    cleaned = html.unescape(body)
-    cleaned = re.sub(r"<script.*?>.*?</script>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
-    cleaned = re.sub(r"<style.*?>.*?</style>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
-    cleaned = re.sub(r"<!--.*?-->", " ", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<xml.*?>.*?</xml>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
-    cleaned = re.sub(r"<o:.*?>.*?</o:.*?>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
-    cleaned = re.sub(r"<v:.*?>.*?</v:.*?>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
-    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
-    cleaned = re.sub(r"\b(width|height|font|color|background|margin|padding|display|line-height|border|mso-[a-z-]+)[^;>{}]*(;|:)", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.replace("=\r\n", "").replace("=\n", "").replace("=20", " ").replace("=3D", "=")
-    cleaned = re.sub(r"[ \u200b\u2060]+", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if len(cleaned) > 600:
-        match = re.search(r"(We've been perfecting.*|I hope.*|Hello.*|Hi.*|Thank you.*|Your order.*|Your account.*)", cleaned, flags=re.IGNORECASE)
-        if match:
-            cleaned = match.group(1)
-    if len(cleaned) > max_chars:
-        cleaned = cleaned[:max_chars].rstrip() + "..."
-    return cleaned
+def clean_body(body: str, max_chars=2000) -> str:
+    if not body: return ""
+    t = html.unescape(body)
+    for pat in [r"<script.*?>.*?</script>", r"<style.*?>.*?</style>", r"<!--.*?-->",
+                r"<xml.*?>.*?</xml>", r"<o:.*?>.*?</o:.*?>", r"<v:.*?>.*?</v:.*?>"]:
+        t = re.sub(pat, " ", t, flags=re.IGNORECASE | re.DOTALL)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t[:max_chars] + ("…" if len(t) > max_chars else "")
 
-def append_assistant_message(decision: dict, result):
-    st.session_state.messages.append({"role": "assistant", "content": "", "decision": decision, "result": result})
+def push(decision, result):
+    st.session_state.messages.append(
+        {"role": "assistant", "decision": decision, "result": result})
 
-def check_connection_status():
+def check_status():
     try:
-        res = requests.get(f"{API_BASE}/integrations/status", timeout=10)
-        res.raise_for_status()
-        data = res.json()
-        st.session_state.google_status = bool(data.get("google_connected", False))
-        st.session_state.outlook_status = bool(data.get("outlook_connected", False))
+        d = requests.get(f"{API_BASE}/integrations/status", timeout=8).json()
+        st.session_state.google_status  = bool(d.get("google_connected"))
+        st.session_state.outlook_status = bool(d.get("outlook_connected"))
     except Exception:
-        st.session_state.google_status = False
-        st.session_state.outlook_status = False
+        st.session_state.google_status = st.session_state.outlook_status = False
 
-def prepare_connect(provider: str):
-    provider = (provider or "").strip().lower()
-    try:
-        res = requests.get(f"{API_BASE}/integrations/{provider}/auth-url", timeout=15, allow_redirects=False)
-        res.raise_for_status()
-        auth_url = res.headers.get("Location") if 300 <= res.status_code < 400 else res.json().get("auth_url")
-        if provider == "google":
-            st.session_state.google_auth_url = auth_url
-        elif provider == "outlook":
-            st.session_state.outlook_auth_url = auth_url
-        if not auth_url:
-            st.error(f"Could not generate {provider.title()} authorization link.")
-    except Exception as e:
-        if provider == "google":
-            st.session_state.google_auth_url = None
-        elif provider == "outlook":
-            st.session_state.outlook_auth_url = None
-        st.error(f"{provider.title()} connect error: {e}")
-
-def _assistant_payload(prompt: str) -> dict:
-    return {"text": prompt, "provider": st.session_state.calendar_provider}
-
-def submit_prompt(prompt: str):
-    if not prompt.strip():
-        return
+def run_prompt(prompt: str):
+    if not prompt.strip(): return
     st.session_state.messages.append({"role": "user", "content": prompt})
     try:
-        res = requests.post(f"{API_BASE}/assistant", json=_assistant_payload(prompt), timeout=25)
+        res = requests.post(f"{API_BASE}/assistant",
+                            json={"text": prompt, "provider": prov()}, timeout=25)
         res.raise_for_status()
-        data = res.json()
-        intent_data = data.get("intent_data", {})
-        decision = data.get("decision", {})
-        result = data.get("result")
+        d           = res.json()
+        intent_data = d.get("intent_data", {})
+        decision    = d.get("decision", {})
+        result      = d.get("result")
         st.session_state.debug_last = {"intent_data": intent_data, "decision": decision, "result": result}
-        intent = (intent_data.get("intent") or "").strip()
-        entities = intent_data.get("entities") or {}
-        if intent == "email_drafting" and result is None:
+        if (intent_data.get("intent") or "").strip() == "email_drafting" and result is None:
             try:
-                draft_res = requests.post(f"{API_BASE}/draft-email", json={"recipient": entities.get("recipient"), "topic": entities.get("topic"), "tone": entities.get("tone", "professional"), "original_text": prompt}, timeout=10)
-                draft_res.raise_for_status()
-                result = draft_res.json()
+                ent = intent_data.get("entities") or {}
+                r2  = requests.post(f"{API_BASE}/draft-email",
+                                    json={"recipient": ent.get("recipient"), "topic": ent.get("topic"),
+                                          "tone": ent.get("tone", "professional"), "original_text": prompt},
+                                    timeout=10)
+                r2.raise_for_status(); result = r2.json()
             except Exception as e:
-                result = {"status": "error", "detail": f"Draft email error: {e}"}
-        append_assistant_message(decision, result)
+                result = {"status": "error", "detail": str(e)}
+        push(decision, result)
     except Exception as e:
-        append_assistant_message({"message": "Backend error"}, {"status": "error", "detail": str(e)})
+        push({"message": "Backend error"}, {"status": "error", "detail": str(e)})
 
-def create_event_directly(title: str, start: str, duration_min: int, attendee_emails=None, pending_reply: dict = None):
-    attendee_emails = attendee_emails or []
-    provider = st.session_state.calendar_provider
+def book(title, start, duration_min, attendees=None, pending_reply=None):
+    attendees = attendees or []
+    p = prov()
     try:
-        res = requests.post(f"{API_BASE}/integrations/{provider}/create-event", json={"title": title, "start": start, "duration_min": int(duration_min), "attendees": attendee_emails, "description": "", "send_notifications": True}, timeout=25)
+        res = requests.post(f"{API_BASE}/integrations/{p}/create-event",
+                            json={"title": title, "start": start, "duration_min": int(duration_min),
+                                  "attendees": attendees, "description": "", "send_notifications": True},
+                            timeout=25)
         res.raise_for_status()
         result = res.json()
-
         reply_result = None
         if pending_reply:
             try:
-                # ✅ FIX Bug F: actualizar la hora en el body del reply con la nueva hora elegida
                 body = pending_reply.get("body", "")
                 if start:
                     try:
                         from zoneinfo import ZoneInfo
-                        chosen_dt = datetime.fromisoformat(start).astimezone(ZoneInfo("America/New_York"))
-                        new_time_str = chosen_dt.strftime("%I:%M %p").lstrip("0")
-                        import re
-                        body = re.sub(
-                            r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b',
-                            new_time_str,
-                            body,
-                            flags=re.IGNORECASE
-                        )
-                    except Exception:
-                        pass
-
-                reply_res = requests.post(
-                    f"{API_BASE}/integrations/{provider}/create-reply-draft",
-                    json={
-                        "to": pending_reply.get("to", ""),
-                        "subject": pending_reply.get("subject", ""),
-                        "body": body,
-                        "thread_id": pending_reply.get("thread_id", ""),
-                    },
-                    timeout=15,
-                )
-                reply_res.raise_for_status()
-                reply_result = reply_res.json()
-            except Exception:
-                pass
-
-        decision = {"action": "create_event", "intent": "create_event", "provider": provider, "title": title, "start": start, "duration_min": int(duration_min), "attendee_emails": attendee_emails, "message": "Event created from suggested time."}
-
+                        ts = datetime.fromisoformat(start).astimezone(ZoneInfo("America/New_York")).strftime("%I:%M %p").lstrip("0")
+                        body = re.sub(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b', ts, body, flags=re.IGNORECASE)
+                    except Exception: pass
+                r2 = requests.post(f"{API_BASE}/integrations/{p}/create-reply-draft",
+                                   json={"to": pending_reply.get("to", ""),
+                                         "subject": pending_reply.get("subject", ""),
+                                         "body": body, "thread_id": pending_reply.get("thread_id", "")},
+                                   timeout=15)
+                r2.raise_for_status(); reply_result = r2.json()
+            except Exception: pass
         if reply_result:
-            combined_result = {"status": "success", "reply": reply_result, "calendar": result, "message": "Reply draft and calendar event created successfully."}
-            append_assistant_message({"action": "reply_and_create_event"}, combined_result)
+            push({"action": "reply_and_create_event"},
+                 {"status": "success", "reply": reply_result, "calendar": result,
+                  "message": "Reply draft and event created."})
         else:
-            append_assistant_message(decision, result)
+            push({"action": "create_event", "provider": p, "title": title,
+                  "start": start, "duration_min": int(duration_min),
+                  "attendee_emails": attendees}, result)
         st.rerun()
     except Exception as e:
-        append_assistant_message({"action": "create_event", "message": "Failed to create event."}, {"status": "error", "detail": str(e)})
-        st.rerun()
-
-def demo_show_upcoming_meetings(provider: str):
-    try:
-        res = requests.post(f"{API_BASE}/integrations/{provider}/list-events", json={"days": 7}, timeout=20)
-        if res.status_code >= 400:
-            return {"status": "error", "detail": res.json().get("detail", res.text)}
-        return res.json()
-    except Exception as e:
-        return {"status": "error", "detail": str(e)}
-
-def demo_check_free_time_tomorrow(provider: str):
-    try:
-        tomorrow = datetime.now() + timedelta(days=1)
-        start_dt = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0).astimezone()
-        end_dt = tomorrow.replace(hour=17, minute=0, second=0, microsecond=0).astimezone()
-        payload = {"time_min": start_dt.isoformat(), "time_max": end_dt.isoformat(), "calendar_ids": ["primary"] if provider == "google" else []}
-        res = requests.post(f"{API_BASE}/integrations/{provider}/freebusy", json=payload, timeout=20)
-        if res.status_code >= 400:
-            return {"status": "error", "detail": res.json().get("detail", res.text)}
-        return res.json()
-    except Exception as e:
-        return {"status": "error", "detail": str(e)}
-
-def demo_create_draft(to: str, subject: str, body: str):
-    provider = st.session_state.calendar_provider
-    try:
-        res = requests.post(
-            f"{API_BASE}/integrations/google/create-draft" if provider == "google" else f"{API_BASE}/assistant",
-            json=({"to": to, "subject": subject, "body": body} if provider == "google" else _assistant_payload(f"draft an email to {to} with subject {subject}: {body}")),
-            timeout=20,
-        )
-        res.raise_for_status()
-        return res.json()
-    except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        push({"action": "create_event"}, {"status": "error", "detail": str(e)}); st.rerun()
 
 
-# -----------------------
-# RENDER HELPERS
-# -----------------------
-def render_event_list(result: dict):
-    events = result.get("events", []) or []
-    provider = result.get("provider", "google")
-    st.markdown('<div class="section-title">📅 Upcoming events</div>', unsafe_allow_html=True)
-    if not events:
-        st.info("No events found for that time range.")
+# ── Card components (all native Streamlit) ─────────────────────────────────
+
+def event_card(e: dict, provider: str = None):
+    """Single event — read-only display."""
+    with st.container(border=True):
+        col1, col2 = st.columns([3, 1])
+        col1.markdown(f"**{e.get('title') or '(No title)'}**")
+        col2.caption(prov_name(provider))
+        st.caption(f"🕐 {fmt(e.get('start',''))}  →  {fmt(e.get('end',''))}")
+        if e.get("htmlLink"):
+            st.markdown(f"[Open in {prov_name(provider)} ↗]({e['htmlLink']})")
+
+
+def event_card_with_delete(event: dict, provider: str):
+    """Created event card with delete button."""
+    event_id = event.get("id")
+    del_key  = f"del_{event_id}"
+    if st.session_state.get(del_key):
+        st.success("Event deleted.")
         return
-    for event in events:
-        title = event.get("title") or "(No title)"
-        start = format_datetime(event.get("start") or "")
-        end = format_datetime(event.get("end") or "")
-        link = event.get("htmlLink")
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown(f'<div class="pill">{provider_label(provider)}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="card-title">{title}</div>', unsafe_allow_html=True)
-        if start and end:
-            st.markdown(f"**Time:** {start} → {end}")
-        elif start:
-            st.markdown(f"**Time:** {start}")
-        if link:
-            st.markdown(f"[{provider_open_label(provider)}]({link})")
-        st.markdown("</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        col1, col2 = st.columns([3, 1])
+        col1.markdown(f"**{event.get('title', '(No title)')}**")
+        col2.caption(prov_name(provider))
+        st.caption(f"🕐 {fmt(event.get('start',''))}  →  {fmt(event.get('end',''))}")
+        attendees = event.get("attendees") or []
+        if attendees:
+            st.caption("👥 " + "  ·  ".join(a.get("email", "") for a in attendees))
+        if event.get("htmlLink"):
+            st.markdown(f"[Open in {prov_name(provider)} ↗]({event['htmlLink']})")
+        if event_id and st.button("🗑 Delete", key=f"delbtn_{event_id}", type="secondary"):
+            try:
+                requests.delete(f"{API_BASE}/integrations/{provider}/events/{event_id}",
+                                timeout=15).raise_for_status()
+                st.session_state[del_key] = True; st.rerun()
+            except Exception as e:
+                st.error(f"Could not delete: {e}")
+
+
+def email_card(em: dict, provider: str):
+    with st.container(border=True):
+        col1, col2 = st.columns([3, 1])
+        col1.markdown(f"**{em.get('subject') or '(No subject)'}**")
+        col2.caption(prov_name(provider))
+        st.caption(f"From: {em.get('from','—')}")
+        if em.get("date"): st.caption(em["date"])
+        if em.get("snippet"): st.markdown(f"_{em['snippet']}_")
+
+
+def draft_card(label: str, em: dict, draft: dict, sent_key: str, send_url: str):
+    with st.container(border=True):
+        col1, col2 = st.columns([3, 1])
+        col1.markdown(f"**{em.get('subject', '(No subject)')}**")
+        col2.caption(label)
+        st.caption(f"To: {em.get('to','—')}")
+        if st.session_state.get(sent_key):
+            st.text_area("Body", value=em.get("body", ""), height=130,
+                         disabled=True, key=f"sb_{draft.get('id','x')}")
+            st.success("✅ Sent!")
+        else:
+            edited = st.text_area("Edit before sending", value=em.get("body", ""),
+                                  height=130, key=f"eb_{draft.get('id','x')}")
+            if st.button("📤 Send", key=f"send_{draft.get('id','x')}", type="primary"):
+                try:
+                    requests.post(send_url,
+                                  json={"to": em.get("to", ""), "subject": em.get("subject", ""),
+                                        "body": edited, "thread_id": draft.get("threadId")},
+                                  timeout=15).raise_for_status()
+                    st.session_state[sent_key] = True; st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+
+
+def time_option_card(label: str, start_raw: str, dur: int, attendees: list,
+                     btn_key: str, title: str, pending_reply=None):
+    with st.container(border=True):
+        col1, col2 = st.columns([3, 1])
+        col1.markdown(f"**{label}**")
+        col2.caption(prov_name())
+        st.caption(f"🕐 {fmt(start_raw)}  ·  {dur} min")
+        if attendees: st.caption("👥 " + "  ·  ".join(attendees))
+        if pending_reply: st.caption("_Will also create the reply draft._")
+        if st.button("Book this time", key=btn_key, use_container_width=True, type="primary"):
+            book(title=title, start=start_raw, duration_min=int(dur),
+                 attendees=attendees, pending_reply=pending_reply)
+
+
+def custom_time_picker(title: str, duration: int, attendees: list,
+                       key_prefix: str, pending_reply=None):
+    with st.container(border=True):
+        st.markdown("**Pick a custom time**")
+        c1, c2 = st.columns(2)
+        date_ = c1.date_input("Date", key=f"{key_prefix}_date")
+        time_ = c2.time_input("Time", key=f"{key_prefix}_time", value=None)
+        if pending_reply: st.caption("_Will also create the reply draft._")
+        if st.button("Book", key=f"{key_prefix}_book", use_container_width=True):
+            if date_ and time_:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo("America/New_York")
+                combined = datetime(date_.year, date_.month, date_.day,
+                                    time_.hour, time_.minute, tzinfo=tz)
+                book(title=title, start=combined.isoformat(), duration_min=int(duration),
+                     attendees=attendees, pending_reply=pending_reply)
+            else:
+                st.warning("Select both date and time.")
+
+
+# ── Render functions ───────────────────────────────────────────────────────
+
+def render_event_list(result: dict):
+    events = result.get("events") or []
+    p      = result.get("provider", "google")
+    st.markdown(f"##### 📅 Upcoming — {prov_name(p)}")
+    if not events: st.info("No events found."); return
+    for e in events:
+        event_card(e, p)
+
 
 def render_created_event(result: dict):
-    event = result.get("event", {}) or {}
-    provider = result.get("provider", st.session_state.calendar_provider)
-    st.markdown('<div class="section-title">✅ Event created</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="pill">{provider_label(provider)}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="card-title">{event.get("title", "(No title)")}</div>', unsafe_allow_html=True)
-    if event.get("start"):
-        st.markdown(f"**Start:** {format_datetime(event.get('start'))}")
-    if event.get("end"):
-        st.markdown(f"**End:** {format_datetime(event.get('end'))}")
-    attendees = event.get("attendees", []) or []
-    if attendees:
-        st.markdown("**Attendees:**")
-        for a in attendees:
-            st.markdown(f"- {a.get('email', '')} — `{a.get('status', 'needsAction')}`")
-    if event.get("htmlLink"):
-        st.markdown(f"[{provider_open_label(provider)}]({event.get('htmlLink')})")
-    st.markdown("</div>", unsafe_allow_html=True)
+    event = result.get("event") or {}
+    p     = result.get("provider", prov())
+    st.success("✅ Event created!")
+    event_card_with_delete(event, p)
+
+
+def render_pending_event(result: dict):
+    p         = result.get("provider", prov())
+    title     = result.get("title", "(No title)")
+    start     = result.get("start", "")
+    dur       = result.get("duration_min", 30)
+    attendees = result.get("attendee_emails") or []
+    st.markdown("##### 📋 Confirm event")
+    with st.container(border=True):
+        st.markdown(f"**{title}**")
+        st.caption(f"🕐 {fmt(start)}  ·  {dur} min  ·  {prov_name(p)}")
+        if attendees: st.caption("👥 " + "  ·  ".join(attendees))
+        c1, c2 = st.columns(2)
+        h = abs(hash(str(result)))
+        if c1.button("✅ Confirm & Create", key=f"conf_{h}", use_container_width=True, type="primary"):
+            book(title=title, start=start, duration_min=int(dur), attendees=attendees)
+        if c2.button("Cancel", key=f"canc_{h}", use_container_width=True):
+            st.info("Cancelled.")
+
 
 def render_email_list(result: dict):
-    emails = result.get("emails", []) or []
-    provider = result.get("provider", "google")
-    pill_label = "Outlook Mail" if provider == "outlook" else "Gmail"
-    st.markdown('<div class="section-title">📧 Latest emails</div>', unsafe_allow_html=True)
-    if not emails:
-        st.info("No emails found.")
-        return
-    for email_data in emails:
-        subject = email_data.get("subject") or "(No subject)"
-        sender = email_data.get("from") or "(Unknown sender)"
-        date_value = email_data.get("date") or ""
-        snippet = email_data.get("snippet") or ""
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="card-title">{subject}</div>', unsafe_allow_html=True)
-        st.markdown(f"**From:** {sender}")
-        if email_data.get("to"):
-            st.markdown(f"**To:** {email_data.get('to')}")
-        if date_value:
-            st.markdown(f"**Date:** {date_value}")
-        if snippet:
-            st.markdown(f'<div class="muted">{snippet}</div>', unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+    emails = result.get("emails") or []
+    p      = result.get("provider", "google")
+    st.markdown(f"##### 📧 Inbox — {prov_name(p)}")
+    if not emails: st.info("No emails found."); return
+    for em in emails:
+        email_card(em, p)
+
 
 def render_read_email(result: dict):
-    email_data = result.get("email", {}) or {}
-    provider = result.get("provider", "google")
-    pill_label = "Outlook Message" if provider == "outlook" else "Gmail Message"
-    subject = email_data.get("subject") or "(No subject)"
-    sender = email_data.get("from") or "(Unknown sender)"
-    body = clean_email_body(email_data.get("body") or "")
-    st.markdown('<div class="section-title">📩 Opened email</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="card-title">{subject}</div>', unsafe_allow_html=True)
-    st.markdown(f"**From:** {sender}")
-    if email_data.get("to"):
-        st.markdown(f"**To:** {email_data.get('to')}")
-    if email_data.get("date"):
-        st.markdown(f"**Date:** {email_data.get('date')}")
-    if email_data.get("snippet"):
-        st.markdown(f"**Snippet:** {email_data.get('snippet')}")
-    if email_data.get("threadId"):
-        st.markdown(f"**Thread ID:** `{email_data.get('threadId')}`")
-    st.text_area("Email body", value=body, height=320, disabled=True, key=f"read_body_{email_data.get('id', 'x')}")
-    st.markdown("</div>", unsafe_allow_html=True)
+    em   = result.get("email") or {}
+    p    = result.get("provider", "google")
+    st.markdown(f"##### 📩 {em.get('subject','(No subject)')}")
+    with st.container(border=True):
+        st.caption(f"From: {em.get('from','—')}  ·  {em.get('date','')}")
+        if em.get("snippet"): st.markdown(f"_{em['snippet']}_")
+        st.text_area("Body", value=clean_body(em.get("body","")),
+                     height=260, disabled=True, key=f"body_{em.get('id','x')}")
+
 
 def render_created_draft(result: dict):
-    draft = result.get("draft", {}) or {}
-    email_data = result.get("email", {}) or {}
-    provider = st.session_state.calendar_provider
-    pill_label = "Outlook Draft" if provider == "outlook" else "Gmail Draft"
-    draft_id = draft.get("id", "x")
-    sent_key = f"sent_draft_{draft_id}"
-    st.markdown('<div class="section-title">✉️ Draft created</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
-    st.markdown(f"**To:** {email_data.get('to', '')}")
-    st.markdown(f"**Subject:** {email_data.get('subject', '')}")
-    if st.session_state.get(sent_key):
-        st.text_area("Draft body", value=email_data.get("body", ""), height=180, disabled=True, key=f"draft_body_{draft_id}")
-        st.success("Email sent successfully!")
-    else:
-        edited_body = st.text_area("Draft body (edit before sending)", value=email_data.get("body", ""), height=180, key=f"draft_body_{draft_id}")
-        if st.button("📤 Send Email", key=f"send_draft_{draft_id}"):
-            try:
-                send_res = requests.post(f"{API_BASE}/integrations/{provider}/send-email", json={"to": email_data.get("to", ""), "subject": email_data.get("subject", ""), "body": edited_body, "thread_id": draft.get("threadId")}, timeout=15)
-                send_res.raise_for_status()
-                st.session_state[sent_key] = True
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to send: {e}")
-    st.markdown("</div>", unsafe_allow_html=True)
+    draft = result.get("draft") or {}
+    em    = result.get("email") or {}
+    p     = prov()
+    draft_card(
+        label=f"{'Outlook' if p=='outlook' else 'Gmail'} Draft",
+        em=em, draft=draft,
+        sent_key=f"sent_d_{draft.get('id','x')}",
+        send_url=f"{API_BASE}/integrations/{p}/send-email",
+    )
+
 
 def render_reply_draft(result: dict):
-    draft = result.get("draft", {}) or {}
-    email_data = result.get("email", {}) or {}
-    provider = st.session_state.calendar_provider
-    pill_label = "Outlook Reply Draft" if provider == "outlook" else "Gmail Reply Draft"
-    draft_id = draft.get("id", "x")
-    sent_key = f"sent_reply_{draft_id}"
-    st.markdown('<div class="section-title">↩️ Reply draft created</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="pill">{pill_label}</div>', unsafe_allow_html=True)
-    st.markdown(f"**To:** {email_data.get('to', '')}")
-    st.markdown(f"**Subject:** {email_data.get('subject', '')}")
-    if st.session_state.get(sent_key):
-        st.text_area("Reply body", value=email_data.get("body", ""), height=180, disabled=True, key=f"reply_body_{draft_id}")
-        st.success("Reply sent successfully!")
-    else:
-        edited_body = st.text_area("Reply body (edit before sending)", value=email_data.get("body", ""), height=180, key=f"reply_body_{draft_id}")
-        if st.button("📤 Send Reply", key=f"send_reply_{draft_id}"):
-            try:
-                send_res = requests.post(f"{API_BASE}/integrations/{provider}/send-email", json={"to": email_data.get("to", ""), "subject": email_data.get("subject", ""), "body": edited_body, "thread_id": draft.get("threadId")}, timeout=15)
-                send_res.raise_for_status()
-                st.session_state[sent_key] = True
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to send: {e}")
-    st.markdown("</div>", unsafe_allow_html=True)
+    draft = result.get("draft") or {}
+    em    = result.get("email") or {}
+    p     = prov()
+    draft_card(
+        label=f"{'Outlook' if p=='outlook' else 'Gmail'} Reply",
+        em=em, draft=draft,
+        sent_key=f"sent_r_{draft.get('id','x')}",
+        send_url=f"{API_BASE}/integrations/{p}/send-email",
+    )
+
 
 def render_mock_draft(result: dict):
-    email_data = result.get("email", {}) or {}
-    st.markdown('<div class="section-title">✉️ Draft email</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="pill">Mock Draft</div>', unsafe_allow_html=True)
-    st.markdown(f"**To:** {email_data.get('to', '')}")
-    st.markdown(f"**Subject:** {email_data.get('subject', '')}")
-    st.text_area("Body", value=email_data.get("body", ""), height=220, disabled=True, key="mock_draft_body")
-    st.markdown("</div>", unsafe_allow_html=True)
+    em = result.get("email") or {}
+    with st.container(border=True):
+        st.markdown(f"**{em.get('subject','(No subject)')}**")
+        st.caption(f"To: {em.get('to','—')}")
+        st.text_area("Body", value=em.get("body",""), height=160, disabled=True, key="mock_body")
 
-def render_meeting_options(decision: dict, result: dict, key_prefix: str = "suggest_times"):
-    options = result.get("options", []) or decision.get("options", []) or []
-    if not options:
-        st.info(result.get("message") or decision.get("message") or "No meeting options found.")
-        return
-    title = result.get("title") or decision.get("title") or "Meeting"
-    if title == "ExecAI Event":
-        title = "Meeting"
-    attendee_emails = result.get("attendee_emails", []) or decision.get("attendee_emails", []) or []
-    busy_display = result.get("busy_display", []) or decision.get("busy_display", []) or []
-    st.markdown('<div class="section-title">🗓 Suggested times</div>', unsafe_allow_html=True)
-    if title:
-        st.markdown(f"**Meeting title:** {title}")
-    if attendee_emails:
-        st.markdown("**Attendees:** " + ", ".join(attendee_emails))
-    if busy_display:
-        st.warning("Busy times: " + " · ".join(busy_display))
-    for idx, opt in enumerate(options):
-        label = opt.get("label", f"Option {idx + 1}")
-        start_raw = opt.get("start", "")
-        start = format_datetime(start_raw)
-        dur = opt.get("duration_min", result.get("duration_min", 30))
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown(f'<div class="pill">{provider_label(st.session_state.calendar_provider)}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="card-title">{label}</div>', unsafe_allow_html=True)
-        st.markdown(f"**Start:** {start}")
-        st.markdown(f"**Duration:** {dur} minutes")
-        if attendee_emails:
-            st.markdown("**Attendees:** " + ", ".join(attendee_emails))
-        # ✅ FIX Bug A: key único usando key_prefix que ya incluye el índice del mensaje
-        button_key = f"{key_prefix}_{idx}_{start_raw}_{title}_{dur}"
-        if st.button(f"Create this meeting ({label})", key=button_key, use_container_width=True):
-            create_event_directly(title=title, start=start_raw, duration_min=int(dur), attendee_emails=attendee_emails)
-        st.markdown("</div>", unsafe_allow_html=True)
 
-def render_conflicts_from_list(conflicts: list, title_text: str = "⚠️ Conflicts found", warning_text: str = "Conflict detected."):
-    st.markdown(f'<div class="section-title">{title_text}</div>', unsafe_allow_html=True)
-    st.warning(warning_text)
+def render_conflicts(conflicts: list, message: str = "Conflict detected."):
+    st.warning(f"⚠️ {message}")
     for c in conflicts:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="pill">Conflict</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="card-title">{c.get("title", "Busy")}</div>', unsafe_allow_html=True)
-        st.markdown(f"**From:** {c.get('start', '?')}")
-        st.markdown(f"**To:** {c.get('end', '?')}")
-        st.markdown("</div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(f"**{c.get('title','Busy')}**")
+            st.caption(f"🕐 {fmt(c.get('start',''))}  →  {fmt(c.get('end',''))}")
 
-def render_alternatives(alternatives: list, proposed_event: dict | None = None, card_key_prefix: str = "alt", pending_reply: dict = None):
-    if not alternatives:
-        return
-    proposed_event = proposed_event or {}
-    event_title = proposed_event.get("title") or "Meeting"
-    attendee_emails = proposed_event.get("attendee_emails") or []
-    st.markdown('<div class="section-title">🕒 Alternative times</div>', unsafe_allow_html=True)
-    for idx, alt in enumerate(alternatives):
-        label = alt.get("label", f"Option {idx + 1}")
-        start_raw = alt.get("start", "")
-        start = format_datetime(start_raw)
-        dur = alt.get("duration_min", proposed_event.get("duration_min", 30))
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown(f'<div class="pill">{provider_label(st.session_state.calendar_provider)}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="card-title">{label}</div>', unsafe_allow_html=True)
-        st.markdown(f"**Start:** {start}")
-        st.markdown(f"**Duration:** {dur} minutes")
-        if attendee_emails:
-            st.markdown("**Attendees:** " + ", ".join(attendee_emails))
-        # ✅ FIX: si hay reply pendiente, mostrar qué va a pasar
-        if pending_reply:
-            st.info("Selecting this time will also create the reply draft.")
-        button_key = f"{card_key_prefix}_{idx}_{start_raw}_{event_title}"
-        if st.button(f"Create this event ({label})", key=button_key, use_container_width=True):
-            create_event_directly(title=event_title, start=start_raw, duration_min=int(dur), attendee_emails=attendee_emails, pending_reply=pending_reply)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-def render_conflicts(decision: dict):
-    render_conflicts_from_list(decision.get("conflicts", []) or [], "⚠️ Conflicts found", decision.get("message", "Conflict detected."))
 
 def render_proposed_event(proposed: dict):
-    if not proposed:
-        return
-    st.markdown('<div class="section-title">📌 Proposed event</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="pill">{provider_label(st.session_state.calendar_provider)}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="card-title">{proposed.get("title", "(No title)")}</div>', unsafe_allow_html=True)
-    if proposed.get("start"):
-        st.markdown(f"**Start:** {format_datetime(proposed.get('start'))}")
-    if proposed.get("duration_min"):
-        st.markdown(f"**Duration:** {proposed.get('duration_min')} minutes")
-    if proposed.get("attendee_emails"):
-        st.markdown("**Attendees:** " + ", ".join(proposed.get("attendee_emails")))
-    st.markdown("</div>", unsafe_allow_html=True)
+    if not proposed: return
+    with st.container(border=True):
+        st.caption("Proposed time")
+        st.markdown(f"**{proposed.get('title','(No title)')}**")
+        st.caption(f"🕐 {fmt(proposed.get('start',''))}  ·  {proposed.get('duration_min',30)} min")
 
-def render_needs_clarification(result: dict):
-    st.markdown('<div class="section-title">❓ More info needed</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.warning(result.get("message", "I need a bit more information."))
-    missing = result.get("missing", []) or []
-    if missing:
-        st.markdown("**Missing:** " + ", ".join(missing))
-    example = result.get("example")
-    if example:
-        st.markdown(f"**Example:** `{example}`")
-    st.markdown("</div>", unsafe_allow_html=True)
 
-def render_generic_message(decision: dict):
-    message = decision.get("message") or "Done."
-    # ✅ FIX Bug C: mensaje de "unknown" más útil
-    if message == "I'm not sure how to help with that yet.":
-        st.info("I didn't understand that. Try being more specific, for example:\n\n"
-                "- *draft an email to john@example.com about the budget*\n"
-                "- *create a meeting tomorrow at 3pm*\n"
-                "- *show my latest emails*")
-    else:
-        st.info(message)
+def render_alternatives(alternatives: list, proposed_event: dict = None,
+                        key_prefix: str = "alt", pending_reply=None):
+    proposed_event = proposed_event or {}
+    title     = proposed_event.get("title") or "Meeting"
+    attendees = proposed_event.get("attendee_emails") or []
+    duration  = proposed_event.get("duration_min", 30)
 
-def render_reply_and_create_event(result: dict):
-    status = result.get("status")
-
-    if status == "success":
-        st.success(result.get("message", "Reply draft and calendar event created successfully."))
-        reply_result = result.get("reply", {}) or {}
-        calendar_result = result.get("calendar", {}) or {}
-        if reply_result:
-            render_reply_draft(reply_result)
-        if calendar_result and calendar_result.get("status") == "created":
-            render_created_event(calendar_result)
-        return
-
-    if status == "partial_success":
-        calendar_result = result.get("calendar", {}) or {}
-        cal_status = calendar_result.get("status")
-
-        # ✅ FIX Bug D: si reply es None, el conflicto se detectó ANTES de crear reply
-        reply_result = result.get("reply")
-        if reply_result:
-            render_reply_draft(reply_result)
-
-        if cal_status == "conflict_detected":
-            # ✅ FIX: construir pending_reply para pasarlo a las alternativas
-            pending_reply = result.get("pending_reply")  # si viene del backend
-            render_conflicts_from_list(
-                calendar_result.get("conflicts", []) or [],
-                "⚠️ Conflict detected — pick an alternative time",
-                calendar_result.get("message", "Choose an alternative time. The reply will be created once you confirm."),
-            )
-            render_proposed_event(calendar_result.get("proposed_event", {}) or {})
-            render_alternatives(
-                calendar_result.get("alternatives", []) or [],
-                calendar_result.get("proposed_event", {}) or {},
-                card_key_prefix="reply_create_alt",
+    if alternatives:
+        st.markdown("##### 🕒 Alternative times")
+        for idx, alt in enumerate(alternatives):
+            time_option_card(
+                label=alt.get("label", f"Option {idx+1}"),
+                start_raw=alt.get("start", ""),
+                dur=alt.get("duration_min", duration),
+                attendees=attendees,
+                btn_key=f"{key_prefix}_{idx}_{alt.get('start','')}",
+                title=title,
                 pending_reply=pending_reply,
             )
-        elif cal_status == "needs_clarification":
-            render_needs_clarification(calendar_result)
-        elif cal_status == "created":
-            render_created_event(calendar_result)
-        else:
-            st.warning(result.get("message", "Partial success."))
-        return
 
-    if status == "not_found":
-        st.warning(result.get("message", "Nothing found."))
-        return
-    if status == "needs_clarification":
-        render_needs_clarification(result)
-        return
-    render_generic_message({"message": result.get("message", "Done.")})
+    custom_time_picker(title=title, duration=duration, attendees=attendees,
+                       key_prefix=key_prefix, pending_reply=pending_reply)
 
-def render_draft_and_create_event(result: dict):
-    status = result.get("status")
-    if status == "success":
-        st.success(result.get("message", "Draft email and calendar event created successfully."))
-        draft_result = result.get("draft", {}) or {}
-        calendar_result = result.get("calendar", {}) or {}
-        if draft_result:
-            render_created_draft(draft_result)
-        if calendar_result and calendar_result.get("status") == "created":
-            render_created_event(calendar_result)
-        return
-    if status == "partial_success":
-        st.warning(result.get("message", "Partial success."))
-        draft_result = result.get("draft", {}) or {}
-        calendar_result = result.get("calendar", {}) or {}
-        if draft_result:
-            render_created_draft(draft_result)
-        cal_status = calendar_result.get("status")
-        if cal_status == "conflict_detected":
-            render_conflicts_from_list(calendar_result.get("conflicts", []) or [], "⚠️ Calendar conflict detected", calendar_result.get("message", "Event not created because of a conflict."))
-            render_proposed_event(calendar_result.get("proposed_event", {}) or {})
-            render_alternatives(calendar_result.get("alternatives", []) or [], calendar_result.get("proposed_event", {}) or {}, card_key_prefix="draft_create_alt")
-        elif cal_status == "needs_clarification":
-            render_needs_clarification(calendar_result)
-        elif cal_status == "created":
-            render_created_event(calendar_result)
-        return
-    if status == "not_found":
-        st.warning(result.get("message", "Nothing found."))
-        return
-    if status == "needs_clarification":
-        render_needs_clarification(result)
-        return
-    render_generic_message({"message": result.get("message", "Done.")})
 
-def render_assistant_result(decision: dict, result, msg_idx: int = 0):
+def render_meeting_options(decision: dict, result: dict, key_prefix: str = "sug"):
+    options   = result.get("options") or decision.get("options") or []
+    title     = result.get("title") or decision.get("title") or "Meeting"
+    if title == "ExecAI Event": title = "Meeting"
+    attendees = result.get("attendee_emails") or decision.get("attendee_emails") or []
+    busy_disp = result.get("busy_display") or decision.get("busy_display") or []
+
+    if not options:
+        st.info(result.get("message") or "No options found."); return
+
+    st.markdown("##### 🗓 Suggested times")
+    if busy_disp: st.caption("Already busy: " + "  ·  ".join(busy_disp))
+
+    for idx, opt in enumerate(options):
+        time_option_card(
+            label=opt.get("label", f"Option {idx+1}"),
+            start_raw=opt.get("start", ""),
+            dur=opt.get("duration_min", result.get("duration_min", 30)),
+            attendees=attendees,
+            btn_key=f"{key_prefix}_{idx}_{opt.get('start','')}_{title}",
+            title=title,
+        )
+
+
+def render_needs_clarification(result: dict):
+    st.warning(result.get("message", "I need a bit more information."))
+    missing = result.get("missing") or []
+    if missing: st.caption("Missing: " + ", ".join(missing))
+    if result.get("example"): st.caption(f"Example: `{result['example']}`")
+
+
+def render_generic(decision: dict):
+    msg = decision.get("message") or "Done."
+    if msg == "I'm not sure how to help with that yet.":
+        st.info("I didn't understand that. Try something like:\n\n"
+                "- *show my latest emails*\n"
+                "- *create a meeting tomorrow at 3pm*\n"
+                "- *draft an email to john@example.com about the budget*")
+    else:
+        st.info(msg)
+
+
+def render_reply_and_create(result: dict):
+    s = result.get("status")
+    if s == "success":
+        st.success(result.get("message", "Done."))
+        if result.get("reply"):   render_reply_draft(result["reply"])
+        if (result.get("calendar") or {}).get("status") == "created":
+            render_created_event(result["calendar"])
+        return
+    if s == "partial_success":
+        if result.get("reply"): render_reply_draft(result["reply"])
+        cal = result.get("calendar") or {}
+        pending_reply = result.get("pending_reply")
+        cs = cal.get("status")
+        if cs == "conflict_detected":
+            render_conflicts(cal.get("conflicts") or [], cal.get("message","Conflict detected."))
+            render_proposed_event(cal.get("proposed_event") or {})
+            render_alternatives(cal.get("alternatives") or [], cal.get("proposed_event") or {},
+                                key_prefix="r_alt", pending_reply=pending_reply)
+        elif cs == "needs_clarification": render_needs_clarification(cal)
+        elif cs == "created":             render_created_event(cal)
+        else: st.warning(result.get("message","Partial success."))
+        return
+    if s == "not_found":          st.warning(result.get("message","Nothing found.")); return
+    if s == "needs_clarification": render_needs_clarification(result); return
+    render_generic({"message": result.get("message","Done.")})
+
+
+def render_draft_and_create(result: dict):
+    s = result.get("status")
+    if s == "success":
+        st.success(result.get("message","Done."))
+        if result.get("draft"):   render_created_draft(result["draft"])
+        if (result.get("calendar") or {}).get("status") == "created":
+            render_created_event(result["calendar"])
+        return
+    if s == "partial_success":
+        if result.get("draft"): render_created_draft(result["draft"])
+        cal = result.get("calendar") or {}
+        cs  = cal.get("status")
+        if cs == "conflict_detected":
+            render_conflicts(cal.get("conflicts") or [])
+            render_proposed_event(cal.get("proposed_event") or {})
+            render_alternatives(cal.get("alternatives") or [], cal.get("proposed_event") or {},
+                                key_prefix="d_alt")
+        elif cs == "needs_clarification": render_needs_clarification(cal)
+        elif cs == "created":             render_created_event(cal)
+        return
+    render_generic({"message": result.get("message","Done.")})
+
+
+def render_result(decision: dict, result, idx: int = 0):
     action = (decision or {}).get("action") or ""
-    if isinstance(result, dict) and result.get("status") == "error":
-        st.error(f"Integration error: {result.get('detail', 'Unknown error')}")
-        return
-    if isinstance(result, dict) and result.get("status") == "needs_clarification":
-        render_needs_clarification(result)
-        return
-    if isinstance(result, dict) and result.get("status") == "not_found":
-        st.warning(result.get("message", "Nothing found."))
-        return
-    if action == "list_events" and isinstance(result, dict):
-        render_event_list(result)
-        return
+    if isinstance(result, dict):
+        s = result.get("status")
+        if s == "error":               st.error(result.get("detail","Error")); return
+        if s == "needs_clarification": render_needs_clarification(result); return
+        if s == "not_found":           st.warning(result.get("message","Nothing found.")); return
+
+    if action == "list_events":
+        render_event_list(result); return
+
     if action == "create_event":
-        if isinstance(result, dict) and result.get("status") == "conflict_detected":
-            render_conflicts_from_list(result.get("conflicts", []) or [], "⚠️ Calendar conflict detected", result.get("message", "Conflict detected."))
-            proposed = result.get("proposed_event", {}) or {}
-            render_proposed_event(proposed)
-            render_alternatives(result.get("alternatives", []) or [], proposed, card_key_prefix=f"create_event_alt_{msg_idx}")
-            return
+        if isinstance(result, dict):
+            s = result.get("status")
+            if s == "pending_confirmation": render_pending_event(result); return
+            if s == "conflict_detected":
+                render_conflicts(result.get("conflicts") or [], result.get("message",""))
+                render_proposed_event(result.get("proposed_event") or {})
+                render_alternatives(result.get("alternatives") or [], result.get("proposed_event") or {},
+                                    key_prefix=f"c_{idx}"); return
+            if s == "created": render_created_event(result); return
         if decision.get("has_conflicts"):
-            render_conflicts(decision)
-            proposed = {"title": decision.get("title"), "start": decision.get("start"), "duration_min": decision.get("duration_min"), "attendee_emails": decision.get("attendee_emails", [])}
+            proposed = {"title": decision.get("title"), "start": decision.get("start"),
+                        "duration_min": decision.get("duration_min"),
+                        "attendee_emails": decision.get("attendee_emails", [])}
+            render_conflicts(decision.get("conflicts") or [])
             render_proposed_event(proposed)
-            render_alternatives(decision.get("alternatives", []) or [], proposed, card_key_prefix=f"decision_alt_{msg_idx}")
-            return
-        if isinstance(result, dict) and result.get("status") == "created":
-            render_created_event(result)
-            return
-        render_generic_message(decision)
-        return
-    if action == "list_emails" and isinstance(result, dict):
-        render_email_list(result)
-        return
-    if action == "read_email" and isinstance(result, dict) and "email" in result:
-        render_read_email(result)
-        return
-    if action in {"create_draft", "draft_email"} and isinstance(result, dict):
-        if result.get("status") == "draft_created":
-            render_created_draft(result)
-            return
-        if result.get("status") == "drafted":
-            render_mock_draft(result)
-            return
-    if action == "reply_email" and isinstance(result, dict):
-        if result.get("status") == "reply_draft_created":
-            render_reply_draft(result)
-            return
-    if action == "reply_and_create_event" and isinstance(result, dict):
-        render_reply_and_create_event(result)
-        return
-    if action == "draft_email_and_create_event" and isinstance(result, dict):
-        render_draft_and_create_event(result)
-        return
-    if action == "suggest_times" and isinstance(result, dict):
-        # ✅ FIX Bug A: incluir msg_idx para garantizar keys únicos entre mensajes
-        unique_prefix = f"suggest_times_{msg_idx}_{abs(hash(str(decision) + str(result)))}"
-        render_meeting_options(decision, result, key_prefix=unique_prefix)
-        return
-    render_generic_message(decision)
+            render_alternatives(decision.get("alternatives") or [], proposed, key_prefix=f"h_{idx}"); return
+        render_generic(decision); return
+
+    if action == "list_emails":                                render_email_list(result); return
+    if action == "read_email" and "email" in (result or {}):   render_read_email(result); return
+    if action in {"create_draft","draft_email"}:
+        s = (result or {}).get("status")
+        if s == "draft_created": render_created_draft(result); return
+        if s == "drafted":       render_mock_draft(result); return
+    if action == "reply_email" and (result or {}).get("status") == "reply_draft_created":
+        render_reply_draft(result); return
+    if action == "reply_and_create_event":        render_reply_and_create(result); return
+    if action == "draft_email_and_create_event":  render_draft_and_create(result); return
+    if action == "suggest_times":
+        render_meeting_options(decision, result,
+                               key_prefix=f"s_{idx}_{abs(hash(str(decision)+str(result)))}"); return
+    render_generic(decision)
 
 
-# -----------------------
-# SIDEBAR
-# -----------------------
-check_connection_status()
+# ── Sidebar ────────────────────────────────────────────────────────────────
+check_status()
 
 with st.sidebar:
     st.markdown("## ExecAI")
-    st.markdown('<div class="sidebar-note">Your AI executive assistant for scheduling and email workflows.</div>', unsafe_allow_html=True)
+    st.caption("AI executive assistant")
     st.divider()
-    st.markdown("### Provider")
-    st.session_state.calendar_provider = st.selectbox("Choose provider", ["google", "outlook"], index=0 if st.session_state.calendar_provider == "google" else 1, format_func=lambda x: "Google" if x == "google" else "Outlook")
+
+    # Provider
+    st.session_state.provider = st.radio(
+        "**Provider**", ["google", "outlook"],
+        format_func=lambda x: "📅 Google" if x == "google" else "📅 Outlook",
+        horizontal=True,
+        index=0 if st.session_state.provider == "google" else 1,
+    )
     st.divider()
-    st.markdown("### Google connection")
-    if st.session_state.google_status:
-        st.success("Google is connected.")
-    else:
-        st.warning("Google is not connected.")
-    if st.button("🔗 Connect Google", use_container_width=True):
-        prepare_connect("google")
-        st.rerun()
+
+    # Connections
+    st.markdown("**Connections**")
+    g_icon = "🟢" if st.session_state.google_status  else "🔴"
+    o_icon = "🟢" if st.session_state.outlook_status else "🔴"
+    st.caption(f"{g_icon} Google   {o_icon} Outlook")
+
+    if not st.session_state.google_status:
+        if st.button("Connect Google", use_container_width=True):
+            try:
+                res = requests.get(f"{API_BASE}/integrations/google/auth-url",
+                                   timeout=15, allow_redirects=False)
+                url = res.headers.get("Location") if 300 <= res.status_code < 400 else res.json().get("auth_url")
+                st.session_state.google_auth_url = url
+            except Exception as e: st.error(str(e))
+            st.rerun()
     if st.session_state.google_auth_url:
-        st.markdown(f"[Authorize Google account]({st.session_state.google_auth_url})")
-    st.divider()
-    st.markdown("### Outlook connection")
-    if st.session_state.outlook_status:
-        st.success("Outlook is connected.")
-    else:
-        st.warning("Outlook is not connected.")
-    if st.button("🔗 Connect Outlook", use_container_width=True):
-        prepare_connect("outlook")
-        st.rerun()
+        st.markdown(f"[Authorize Google →]({st.session_state.google_auth_url})")
+
+    if not st.session_state.outlook_status:
+        if st.button("Connect Outlook", use_container_width=True):
+            try:
+                res = requests.get(f"{API_BASE}/integrations/outlook/auth-url",
+                                   timeout=15, allow_redirects=False)
+                url = res.headers.get("Location") if 300 <= res.status_code < 400 else res.json().get("auth_url")
+                st.session_state.outlook_auth_url = url
+            except Exception as e: st.error(str(e))
+            st.rerun()
     if st.session_state.outlook_auth_url:
-        st.markdown(f"[Authorize Outlook account]({st.session_state.outlook_auth_url})")
+        st.markdown(f"[Authorize Outlook →]({st.session_state.outlook_auth_url})")
+
     st.divider()
-    st.markdown("### Quick actions")
-    if st.button("📧 Show latest emails", use_container_width=True):
-        submit_prompt("show my latest emails"); st.rerun()
-    if st.button("📩 Read latest email", use_container_width=True):
-        submit_prompt("read my latest email"); st.rerun()
-    if st.button("↩️ Reply to latest email", use_container_width=True):
-        submit_prompt('reply to my latest email saying "Thanks for the update"'); st.rerun()
-    if st.button("🤝 Reply + create meeting", use_container_width=True):
-        submit_prompt('reply to my latest email saying "I am available tomorrow at 2pm" and create the meeting'); st.rerun()
-    if st.button("✉️ Draft + create meeting", use_container_width=True):
-        submit_prompt('draft an email to sarah@example.com saying "I am available tomorrow at 2pm" and create the meeting'); st.rerun()
-    if st.button("📅 Show my calendar for next week", use_container_width=True):
-        submit_prompt("show my calendar for next week"); st.rerun()
-    if st.button("🗓 Find a time to meet tomorrow", use_container_width=True):
-        submit_prompt("find a time to meet tomorrow"); st.rerun()
-    if st.button("➕ Create a demo event", use_container_width=True):
-        submit_prompt("create an event called Demo Sync tomorrow at 2pm for 30 minutes"); st.rerun()
-    if st.button("✉️ Create demo draft", use_container_width=True):
-        submit_prompt("draft an email to sarah@example.com about the proposal"); st.rerun()
+
+    # Quick actions
+    st.markdown("**Shortcuts**")
+    shortcuts = [
+        ("📧 Inbox",              "show my latest emails"),
+        ("📅 Calendar",           "show my calendar for next week"),
+        ("🗓 Find time tomorrow", "find a time to meet tomorrow"),
+    ]
+    for label, prompt in shortcuts:
+        if st.button(label, use_container_width=True, key=f"sc_{label}"):
+            run_prompt(prompt); st.rerun()
+
     st.divider()
     if st.button("🧹 Clear chat", use_container_width=True):
         st.session_state.messages = []
-        st.session_state.debug_last = {"intent_data": None, "decision": None, "result": None}
+        st.session_state.debug_last = {}
         st.session_state.google_auth_url = None
         st.session_state.outlook_auth_url = None
         st.rerun()
-    show_debug = st.toggle("Show debug", value=False)
+    show_debug = st.toggle("Debug", value=False)
 
 
-# -----------------------
-# HEADER
-# -----------------------
-st.markdown('<div class="main-title">ExecAI</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">A lightweight executive assistant MVP with Google Calendar, Outlook Calendar, and email integrations.</div>', unsafe_allow_html=True)
+# ── Header ─────────────────────────────────────────────────────────────────
+st.markdown("## ExecAI")
 
+# ── Quick tools (collapsed) ────────────────────────────────────────────────
+with st.expander("🛠 Quick tools", expanded=False):
+    tc1, tc2, tc3 = st.columns(3)
 
-# -----------------------
-# DEMO PANELS
-# -----------------------
-selected_provider = st.session_state.calendar_provider
-demo_col1, demo_col2, demo_col3 = st.columns(3)
+    with tc1:
+        st.caption(f"**Meetings** — {prov_name()}")
+        if st.button("Load next 7 days", use_container_width=True, key="t_meet"):
+            try:
+                data = requests.post(f"{API_BASE}/integrations/{prov()}/list-events",
+                                     json={"days": 7}, timeout=20).json()
+                for e in (data.get("events") or [])[:5]:
+                    st.markdown(f"**{e.get('title','?')}**  \n{fmt(e.get('start',''))}")
+            except Exception as ex: st.error(str(ex))
 
-with demo_col1:
-    st.markdown(f"### Upcoming Meetings ({selected_provider.title()})")
-    if st.button("Show my next meetings", use_container_width=True):
-        demo_events = demo_show_upcoming_meetings(selected_provider)
-        if demo_events.get("status") == "error":
-            st.error(f"Could not load meetings: {demo_events.get('detail', 'Unknown error')}")
-        else:
-            events = demo_events.get("events", []) or []
-            if not events:
-                st.info("No meetings found.")
-            else:
-                for event in events[:5]:
-                    st.markdown('<div class="card">', unsafe_allow_html=True)
-                    st.markdown(f'<div class="pill">{provider_label(selected_provider)}</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="card-title">{event.get("title") or "(No title)"}</div>', unsafe_allow_html=True)
-                    if event.get("start"):
-                        st.markdown(f"**Start:** {format_datetime(event.get('start'))}")
-                    if event.get("end"):
-                        st.markdown(f"**End:** {format_datetime(event.get('end'))}")
-                    if event.get("htmlLink"):
-                        st.markdown(f"[{provider_open_label(selected_provider)}]({event.get('htmlLink')})")
-                    st.markdown("</div>", unsafe_allow_html=True)
+    with tc2:
+        st.caption(f"**Availability tomorrow** — {prov_name()}")
+        if st.button("Check free time", use_container_width=True, key="t_free"):
+            try:
+                tmr = datetime.now() + timedelta(days=1)
+                s   = tmr.replace(hour=9,  minute=0, second=0, microsecond=0).astimezone()
+                e   = tmr.replace(hour=17, minute=0, second=0, microsecond=0).astimezone()
+                data = requests.post(f"{API_BASE}/integrations/{prov()}/freebusy",
+                                     json={"time_min": s.isoformat(), "time_max": e.isoformat(),
+                                           "calendar_ids": ["primary"] if prov()=="google" else []},
+                                     timeout=20).json()
+                busy = data.get("busy_blocks") or []
+                if busy:
+                    for b in busy: st.caption(f"Busy: {fmt(b['start'])} → {fmt(b['end'])}")
+                else:
+                    st.success("Free 9 AM – 5 PM")
+            except Exception as ex: st.error(str(ex))
 
-with demo_col2:
-    st.markdown(f"### Free Time Tomorrow ({selected_provider.title()})")
-    if st.button("Check availability tomorrow", use_container_width=True):
-        freebusy = demo_check_free_time_tomorrow(selected_provider)
-        if freebusy.get("status") == "error":
-            st.error(f"Could not check availability: {freebusy.get('detail', 'Unknown error')}")
-        else:
-            busy_blocks = freebusy.get("busy_blocks", []) or []
-            if not busy_blocks:
-                st.success("You are free tomorrow between 9:00 AM and 5:00 PM.")
-            else:
-                st.warning("Busy times found tomorrow:")
-                for block in busy_blocks:
-                    st.markdown('<div class="card">', unsafe_allow_html=True)
-                    st.markdown('<div class="pill">Busy</div>', unsafe_allow_html=True)
-                    st.markdown(f"**From:** {format_datetime(block.get('start', ''))}")
-                    st.markdown(f"**To:** {format_datetime(block.get('end', ''))}")
-                    st.markdown("</div>", unsafe_allow_html=True)
-
-with demo_col3:
-    st.markdown(f"### Draft Email ({selected_provider.title()})")
-    demo_to = st.text_input("Recipient", key="demo_to")
-    demo_subject = st.text_input("Subject", key="demo_subject")
-    demo_body = st.text_area("Message", key="demo_body", height=130)
-    if st.button("Create Draft", use_container_width=True):
-        draft_result = demo_create_draft(demo_to, demo_subject, demo_body)
-        if draft_result.get("status") == "draft_created":
-            st.success("Draft created.")
-            render_created_draft(draft_result)
-        else:
-            st.error(f"Could not create draft: {draft_result.get('detail', 'Unknown error')}")
+    with tc3:
+        st.caption("**Quick draft**")
+        to_  = st.text_input("To",      key="qt_to",  placeholder="email@example.com",  label_visibility="collapsed")
+        sub_ = st.text_input("Subject", key="qt_sub", placeholder="Subject",             label_visibility="collapsed")
+        bod_ = st.text_area("",         key="qt_bod", placeholder="Message…", height=68, label_visibility="collapsed")
+        if st.button("Create draft", use_container_width=True, key="t_draft"):
+            try:
+                requests.post(f"{API_BASE}/integrations/google/create-draft",
+                              json={"to": to_, "subject": sub_, "body": bod_},
+                              timeout=20).raise_for_status()
+                st.success("Draft created.")
+            except Exception as ex: st.error(str(ex))
 
 st.divider()
 
 
-# -----------------------
-# CHAT HISTORY
-# ✅ FIX Bug A: usar enumerate para pasar msg_idx a render_assistant_result
-# -----------------------
-for msg_idx, msg in enumerate(st.session_state.messages):
+# ── Chat history ───────────────────────────────────────────────────────────
+for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         if msg["role"] == "user":
             st.markdown(msg["content"])
         else:
-            decision = msg.get("decision") or {}
-            result = msg.get("result")
-            render_assistant_result(decision, result, msg_idx=msg_idx)
+            render_result(msg.get("decision") or {}, msg.get("result"), idx=idx)
 
-
-# -----------------------
-# EMPTY STATE
-# -----------------------
+# ── Empty state ────────────────────────────────────────────────────────────
 if not st.session_state.messages:
     st.markdown("""
-        <div class="empty-state">
-            <strong>Try asking something like:</strong><br><br>
-            • show my latest emails<br>
-            • read my latest email<br>
-            • reply to my latest email saying "Thanks for the update"<br>
-            • reply to my latest email saying "I am available tomorrow at 2pm" and create the meeting<br>
-            • draft an email to sarah@example.com saying "I am available tomorrow at 2pm" and create the meeting<br>
-            • create a meeting with sarah@example.com tomorrow at 11am<br>
-            • schedule a budget review with sarah@example.com and john@example.com tomorrow at 11am for 45 minutes<br>
-            • show my calendar for next week<br>
-            • create an event called Budget Review tomorrow at 2pm for 45 minutes<br>
-            • draft an email to sarah@example.com about the proposal<br>
-            • find a time to meet tomorrow
-        </div>
-    """, unsafe_allow_html=True)
+<p class="empty-hint">
+Try asking something like…<br>
+• show my latest emails<br>
+• read my latest email<br>
+• reply to my latest email saying "Thanks for the update"<br>
+• create a meeting with sarah@example.com tomorrow at 11am<br>
+• draft an email to sarah@example.com about the proposal<br>
+• find a time to meet tomorrow<br>
+• show my calendar for next week
+</p>""", unsafe_allow_html=True)
 
-
-# -----------------------
-# CHAT INPUT
-# -----------------------
-prompt = st.chat_input("Ask ExecAI something...")
-
+# ── Chat input ─────────────────────────────────────────────────────────────
+prompt = st.chat_input("Ask ExecAI something…")
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
     with st.chat_message("assistant"):
-        with st.spinner("ExecAI is thinking..."):
+        with st.spinner("Thinking…"):
             try:
-                res = requests.post(f"{API_BASE}/assistant", json=_assistant_payload(prompt), timeout=25)
+                res = requests.post(f"{API_BASE}/assistant",
+                                    json={"text": prompt, "provider": prov()}, timeout=25)
                 res.raise_for_status()
-                data = res.json()
-                intent_data = data.get("intent_data", {})
-                decision = data.get("decision", {})
-                result = data.get("result")
-                st.session_state.debug_last = {"intent_data": intent_data, "decision": decision, "result": result}
-                intent = (intent_data.get("intent") or "").strip()
-                entities = intent_data.get("entities") or {}
-                if intent == "email_drafting" and result is None:
+                d           = res.json()
+                intent_data = d.get("intent_data", {})
+                decision    = d.get("decision", {})
+                result      = d.get("result")
+                st.session_state.debug_last = {"intent_data": intent_data,
+                                               "decision": decision, "result": result}
+                if (intent_data.get("intent") or "").strip() == "email_drafting" and result is None:
                     try:
-                        draft_res = requests.post(f"{API_BASE}/draft-email", json={"recipient": entities.get("recipient"), "topic": entities.get("topic"), "tone": entities.get("tone", "professional"), "original_text": prompt}, timeout=10)
-                        draft_res.raise_for_status()
-                        result = draft_res.json()
+                        ent = intent_data.get("entities") or {}
+                        r2  = requests.post(f"{API_BASE}/draft-email",
+                                            json={"recipient": ent.get("recipient"),
+                                                  "topic": ent.get("topic"),
+                                                  "tone": ent.get("tone","professional"),
+                                                  "original_text": prompt}, timeout=10)
+                        r2.raise_for_status(); result = r2.json()
                     except Exception as e:
-                        result = {"status": "error", "detail": f"Draft email error: {e}"}
-                # msg_idx for new message = current length (before appending)
-                new_msg_idx = len(st.session_state.messages)
-                render_assistant_result(decision, result, msg_idx=new_msg_idx)
-                append_assistant_message(decision, result)
+                        result = {"status": "error", "detail": str(e)}
+                new_idx = len(st.session_state.messages)
+                render_result(decision, result, idx=new_idx)
+                push(decision, result)
             except Exception as e:
                 st.error(f"Backend error: {e}")
-                append_assistant_message({"message": "Backend error"}, {"status": "error", "detail": str(e)})
+                push({"message": "Backend error"}, {"status": "error", "detail": str(e)})
 
 
-# -----------------------
-# DEBUG PANEL
-# -----------------------
+# ── Debug ──────────────────────────────────────────────────────────────────
 if show_debug:
-    with st.expander("Debug (Intent + Decision + Result)", expanded=False):
+    with st.expander("Debug", expanded=False):
         dbg = st.session_state.debug_last or {}
-        if dbg.get("intent_data") is not None:
-            st.markdown("### Detected intent")
-            st.json(dbg["intent_data"])
-        if dbg.get("decision") is not None:
-            st.markdown("### Decision / Orchestration")
-            st.json(dbg["decision"])
-        if dbg.get("result") is not None:
-            st.markdown("### Result")
-            st.json(dbg["result"])
+        for k, label in [("intent_data","Intent"), ("decision","Decision"), ("result","Result")]:
+            if dbg.get(k): st.markdown(f"**{label}**"); st.json(dbg[k])

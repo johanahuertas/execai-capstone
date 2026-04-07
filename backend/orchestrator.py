@@ -254,13 +254,20 @@ def _suggest_alternative_slots(
     max_options: int = 3,
 ) -> List[Dict[str, Any]]:
     try:
-        search_start, search_end = timeframe_to_range(timeframe, tz)
+        # ✅ FIX Bug G: usar start_dt directamente para obtener el día correcto
+        # start_dt ya tiene la fecha correcta (Dec 16, Apr 7, etc.)
+        # Buscar alternativas en ESE mismo día, no en "timeframe" que puede tener formato variable
+        same_day_start = datetime(start_dt.year, start_dt.month, start_dt.day, 8, 0, tzinfo=tz)
+        same_day_end = datetime(start_dt.year, start_dt.month, start_dt.day, 18, 0, tzinfo=tz)
 
-        if start_dt < search_start:
-            search_start = start_dt.replace(hour=8, minute=0, second=0, microsecond=0)
-
-        if start_dt + timedelta(hours=8) > search_end:
-            search_end = max(search_end, start_dt.replace(hour=18, minute=0, second=0, microsecond=0))
+        # Si el evento es de mañana o pronto, también revisar días siguientes
+        now = datetime.now(tz)
+        if same_day_start < now:
+            # El día ya pasó, buscar desde ahora en adelante
+            search_start, search_end = timeframe_to_range(timeframe, tz)
+        else:
+            search_start = same_day_start
+            search_end = same_day_end
 
         try:
             freebusy_data = get_freebusy_service(
@@ -270,6 +277,7 @@ def _suggest_alternative_slots(
             )
             busy_blocks = freebusy_data.get("busy_blocks", []) or []
         except Exception:
+            # ✅ FIX: fallback con búsqueda en el rango correcto, no en hoy
             busy_blocks = get_mock_busy_blocks(search_start, tz)
 
         slots = find_available_slots(
@@ -285,13 +293,16 @@ def _suggest_alternative_slots(
             slot_start_raw = slot.get("start")
             if not slot_start_raw:
                 continue
-
             try:
                 slot_start = datetime.fromisoformat(slot_start_raw)
             except Exception:
                 continue
-
-            if slot_start >= start_dt:
+            # ✅ FIX: para eventos el mismo día, mostrar cualquier slot disponible
+            # Solo filtrar por >= start_dt si es un día relativo (tomorrow, next week)
+            # Para fechas específicas, mostrar los mejores slots del día
+            if slot_start.date() == start_dt.date():
+                filtered.append(_normalize_slot(slot))  # cualquier hora del mismo día
+            elif slot_start >= start_dt:
                 filtered.append(_normalize_slot(slot))
 
         if not filtered:

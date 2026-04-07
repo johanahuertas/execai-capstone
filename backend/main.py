@@ -236,13 +236,16 @@ def assistant(payload: ParseIntentRequest):
                     },
                 }
             else:
-                result = create_event_service(
-                    provider=provider,
-                    title=str(title),
-                    start=str(start),
-                    duration_min=int(duration_min),
-                    attendees=attendee_emails,
-                )
+                # ✅ FEATURE 1: mostrar preview antes de crear
+                result = {
+                    "status": "pending_confirmation",
+                    "provider": provider,
+                    "title": title,
+                    "start": start,
+                    "duration_min": int(duration_min),
+                    "attendee_emails": attendee_emails,
+                    "message": "Ready to create this event. Confirm to proceed.",
+                }
 
         elif action in {"suggest_times", "meeting_scheduling"}:
             result = {
