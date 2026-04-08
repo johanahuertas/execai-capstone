@@ -999,37 +999,37 @@ def search_contacts_service(provider: str, query: str, max_scan: int = 50) -> Li
     contacts: List[Dict[str, str]] = []
 
     for em in emails_data.get("emails", []):
-        for field in ["from", "to"]:
-            raw = em.get(field) or ""
-            if not raw:
+        # ✅ FIX: only check "from" field — "to" is usually the user's own email
+        raw = em.get("from") or ""
+        if not raw:
+            continue
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
                 continue
-            for part in raw.split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                email_addr = _extract_email_address(part)
-                if not email_addr or email_addr in seen:
-                    continue
+            email_addr = _extract_email_address(part)
+            if not email_addr or email_addr in seen:
+                continue
 
-                # ✅ FIX: aggressive commercial/marketing filter
-                if _is_commercial_email(email_addr, part):
-                    continue
+            # ✅ FIX: aggressive commercial/marketing filter
+            if _is_commercial_email(email_addr, part):
+                continue
 
-                name = ""
-                m = re.match(r"^(.+?)\s*<", part)
-                if m:
-                    name = m.group(1).strip().strip('"').strip("'")
+            name = ""
+            m = re.match(r"^(.+?)\s*<", part)
+            if m:
+                name = m.group(1).strip().strip('"').strip("'")
 
-                # skip if name looks commercial (all caps, has emojis, too long)
-                if name and (name.isupper() or len(name) > 40 or any(ord(c) > 127 for c in name)):
-                    continue
+            # skip if name looks commercial (all caps, has emojis, too long)
+            if name and (name.isupper() or len(name) > 40 or any(ord(c) > 127 for c in name)):
+                continue
 
-                if not query:
-                    seen.add(email_addr)
-                    contacts.append({"name": name or email_addr, "email": email_addr})
-                elif query in email_addr.lower() or query in name.lower():
-                    seen.add(email_addr)
-                    contacts.append({"name": name or email_addr, "email": email_addr})
+            if not query:
+                seen.add(email_addr)
+                contacts.append({"name": name or email_addr, "email": email_addr})
+            elif query in email_addr.lower() or query in name.lower():
+                seen.add(email_addr)
+                contacts.append({"name": name or email_addr, "email": email_addr})
 
     if query:
         contacts.sort(key=lambda c: (0 if c["name"].lower().startswith(query) else 1, c["name"].lower()))
