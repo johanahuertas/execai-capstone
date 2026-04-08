@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, time
 from typing import List, Dict, Any, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -182,6 +183,15 @@ def timeframe_to_range(
 
     now = datetime.now(tz)
     tf = (timeframe or "").lower().strip()
+
+    # ✅ FIX: manejar fechas ISO como "2026-04-10"
+    iso_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", tf)
+    if iso_match:
+        y, m, d = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
+        target = datetime(y, m, d, tzinfo=tz).date()
+        start = datetime.combine(target, time(0, 0), tzinfo=tz)
+        end = datetime.combine(target, time(23, 59), tzinfo=tz)
+        return start, end
 
     if tf == "today":
         start = now

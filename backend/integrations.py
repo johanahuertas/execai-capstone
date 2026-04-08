@@ -957,3 +957,25 @@ def google_send_email(payload: SendEmailRequest):
 @router.post("/outlook/send-email")
 def outlook_send_email(payload: SendEmailRequest):
     return send_email_service("outlook", payload.to, payload.subject, payload.body, payload.thread_id)
+
+
+# ✅ FIX: Endpoints de Outlook Email que faltaban
+
+@router.get("/outlook/list-emails")
+def outlook_list_emails(max_results: int = 10, inbox_only: bool = True, primary_only: bool = False):
+    return list_emails_service("outlook", max_results=max_results, inbox_only=inbox_only, primary_only=primary_only)
+
+
+@router.get("/outlook/read-email/{message_id}")
+def outlook_read_email(message_id: str):
+    return read_email_service("outlook", message_id)
+
+
+@router.post("/outlook/create-draft")
+def outlook_create_draft(payload: CreateDraftRequest):
+    return create_gmail_draft_service("outlook", payload.to, payload.subject, payload.body)
+
+
+@router.post("/outlook/create-reply-draft")
+def outlook_create_reply_draft(payload: CreateReplyDraftRequest):
+    return create_gmail_reply_draft_service("outlook", payload.to, payload.subject, payload.body, payload.thread_id)

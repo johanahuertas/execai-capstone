@@ -611,7 +611,8 @@ with st.expander("🛠 Quick tools", expanded=False):
         bod_ = st.text_area("",         key="qt_bod", placeholder="Message…", height=68, label_visibility="collapsed")
         if st.button("Create draft", use_container_width=True, key="t_draft"):
             try:
-                requests.post(f"{API_BASE}/integrations/google/create-draft",
+                # ✅ FIX: usa provider dinámico en vez de hardcoded "google"
+                requests.post(f"{API_BASE}/integrations/{prov()}/create-draft",
                               json={"to": to_, "subject": sub_, "body": bod_},
                               timeout=20).raise_for_status()
                 st.success("Draft created.")
