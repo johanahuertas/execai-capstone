@@ -1010,8 +1010,20 @@ def search_contacts_service(provider: str, query: str, max_scan: int = 30) -> Li
                 email_addr = _extract_email_address(part)
                 if not email_addr or email_addr in seen:
                     continue
-                # skip noreply and system addresses
-                if any(skip in email_addr for skip in ["noreply", "no-reply", "mailer-daemon", "postmaster", "notifications"]):
+                # skip noreply, system, and marketing addresses
+                if any(skip in email_addr for skip in [
+                    "noreply", "no-reply", "mailer-daemon", "postmaster",
+                    "notifications", "newsletter", "marketing", "promo",
+                    "factory", "store", "shop", "sales", "support",
+                    "info@", "hello@", "team@", "news@", "updates@",
+                    "billing@", "orders@", "shipping@", "delivery@",
+                    "donotreply", "do-not-reply", "automated",
+                    "bloomingdale", "bananarepublic", "amazon", "apple.com",
+                    "google.com", "facebook", "instagram", "twitter",
+                    "linkedin", "spotify", "netflix", "uber", "lyft",
+                    "venmo", "paypal", "cashapp", "zelle",
+                    "discussions.", "tripleseat",
+                ]):
                     continue
                 name = ""
                 m = re.match(r"^(.+?)\s*<", part)

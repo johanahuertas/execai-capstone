@@ -32,13 +32,19 @@ EMAIL_REGEX = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
 
 # ✅ FIX: words that should NEVER be treated as recipient names
 _STOP_WORDS = {
+    # articles, pronouns, prepositions
     "the", "my", "a", "an", "this", "that", "it", "me", "them", "us",
     "his", "her", "its", "our", "their", "your", "some", "any", "all",
+    "to", "in", "on", "at", "of", "by", "up", "so", "if", "or", "as",
+    "is", "am", "are", "was", "be", "do", "no", "not", "yes",
+    # time words
     "most", "recent", "latest", "last", "first", "new", "old",
-    "email", "emails", "inbox", "draft", "reply", "respond", "send",
-    "about", "regarding", "for", "with", "from", "and", "or", "but",
-    "please", "could", "would", "should", "can", "will", "just",
     "tomorrow", "today", "next", "week", "month", "calendar",
+    # email/action words
+    "email", "emails", "inbox", "draft", "reply", "respond", "send",
+    "about", "regarding", "for", "with", "from", "and", "but",
+    "please", "could", "would", "should", "can", "will", "just",
+    # task words
     "meeting", "event", "appointment", "schedule",
     "team", "group", "everyone", "somebody", "someone", "nobody",
     "here", "there", "then", "now", "back", "again",
@@ -227,29 +233,28 @@ def _extract_recipient(text: str) -> Optional[str]:
     if email_match:
         return email_match.group(0).lower()
 
-    # 2. "email Sarah" or "email gavin" (name after "email")
-    m = re.search(r"\bemail\s+([A-Za-z][a-z]+)\b", t)
+    # 2. "email to Juliana" or "email Juliana" (skip "to" between)
+    m = re.search(r"\bemail\s+(?:to\s+)?([A-Za-z][a-z]{1,})\b", t)
     if m:
         name = m.group(1).lower()
-        if name not in _STOP_WORDS:
+        if name not in _STOP_WORDS and len(name) > 1:
             return name
 
-    # 3. "to Sarah" / "to gavin" when context is clearly about drafting/sending
+    # 3. "to Juliana" / "to gavin" when context is clearly about drafting/sending
     drafting_context = any(w in t.lower() for w in [
-        "draft", "write", "compose", "send", "email to", "message to",
+        "draft", "write", "compose", "send", "message to",
         "reach out to", "shoot", "need to send",
     ])
     if drafting_context:
-        # try capitalized first
-        m2 = re.search(r"\bto\s+([A-Z][a-z]+)\b", t)
+        # "to Name" — try capitalized first, then lowercase
+        m2 = re.search(r"\bto\s+([A-Z][a-z]{1,})\b", t)
         if m2:
             name = m2.group(1).lower()
             if name not in _STOP_WORDS:
                 return name
-        # also try lowercase names (user might not capitalize)
         m3 = re.search(r"\bto\s+([a-z]{2,})\b", t.lower())
         if m3:
-            name = m3.group(1).lower()
+            name = m3.group(1)
             if name not in _STOP_WORDS:
                 return name
 
