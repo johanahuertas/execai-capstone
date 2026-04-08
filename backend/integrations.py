@@ -1039,40 +1039,30 @@ def search_contacts_service(provider: str, query: str, max_scan: int = 50) -> Li
 
 
 def _is_commercial_email(email_addr: str, raw_header: str = "") -> bool:
-    """Detect if an email address is from a commercial/marketing source."""
+    """Return True if email does NOT look like a real person."""
     addr = email_addr.lower()
-    # skip common marketing prefixes
-    skip_prefixes = [
-        "noreply", "no-reply", "donotreply", "do-not-reply",
-        "info@", "hello@", "team@", "news@", "updates@", "hi@",
-        "billing@", "orders@", "shipping@", "delivery@",
-        "notifications@", "newsletter@", "marketing@", "promo@",
-        "sales@", "support@", "help@", "contact@", "automated@",
-    ]
-    if any(addr.startswith(p) for p in skip_prefixes):
-        return True
-    # skip marketing email server domains (eml., email., e2., mail., m.)
     domain = addr.split("@")[-1] if "@" in addr else ""
-    commercial_domain_prefixes = ["eml.", "email.", "e2.", "mail.", "m.", "send.", "msg.", "post.", "em."]
-    if any(domain.startswith(p) for p in commercial_domain_prefixes):
-        return True
-    # skip known commercial domains
-    commercial_domains = [
-        "nordstrom", "bloomingdale", "bananarepublic", "amazon", "apple.com",
-        "google.com", "facebook", "instagram", "twitter", "linkedin",
-        "spotify", "netflix", "uber", "lyft", "venmo", "paypal",
-        "cashapp", "zelle", "tripleseat", "vspink", "gap.com",
-        "oldnavy", "target", "walmart", "bestbuy", "macys",
-        "sephora", "ulta", "nike", "adidas", "starbucks",
-        "doordash", "grubhub", "ubereats", "postmates",
-        "square", "stripe", "shopify", "etsy", "ebay",
+    local = addr.split("@")[0] if "@" in addr else ""
+
+    # ✅ ALLOW: personal email providers are always real people
+    personal_domains = [
+        "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+        "icloud.com", "aol.com", "live.com", "msn.com",
+        "protonmail.com", "zoho.com", "mail.com", "ymail.com",
     ]
-    if any(cd in domain for cd in commercial_domains):
-        return True
-    # skip if domain has too many parts (usually marketing: email.company.com)
-    if domain.count(".") >= 3:
-        return True
-    return False
+    if domain in personal_domains:
+        return False
+
+    # ✅ ALLOW: .edu emails are real people
+    if domain.endswith(".edu"):
+        return False
+
+    # ✅ ALLOW: looks like firstname.lastname@ or firstname@ at a normal domain
+    if re.match(r"^[a-z]{2,}\.[a-z]{2,}$", local) and domain.count(".") == 1:
+        return False
+
+    # Everything else is likely commercial
+    return True
 
 
 def resolve_contact_name(provider: str, name: str) -> Optional[str]:
