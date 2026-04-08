@@ -985,7 +985,7 @@ def outlook_create_reply_draft(payload: CreateReplyDraftRequest):
 # ✅ NEW: CONTACT SEARCH (from email history)
 # -----------------------
 
-def search_contacts_service(provider: str, query: str, max_scan: int = 30) -> List[Dict[str, str]]:
+def search_contacts_service(provider: str, query: str, max_scan: int = 50) -> List[Dict[str, str]]:
     """Search recent emails for contacts matching a name or partial email.
        If query is empty, return all recent unique contacts."""
     query = (query or "").strip().lower()
@@ -1010,26 +1010,20 @@ def search_contacts_service(provider: str, query: str, max_scan: int = 30) -> Li
                 email_addr = _extract_email_address(part)
                 if not email_addr or email_addr in seen:
                     continue
-                # skip noreply, system, and marketing addresses
-                if any(skip in email_addr for skip in [
-                    "noreply", "no-reply", "mailer-daemon", "postmaster",
-                    "notifications", "newsletter", "marketing", "promo",
-                    "factory", "store", "shop", "sales", "support",
-                    "info@", "hello@", "team@", "news@", "updates@",
-                    "billing@", "orders@", "shipping@", "delivery@",
-                    "donotreply", "do-not-reply", "automated",
-                    "bloomingdale", "bananarepublic", "amazon", "apple.com",
-                    "google.com", "facebook", "instagram", "twitter",
-                    "linkedin", "spotify", "netflix", "uber", "lyft",
-                    "venmo", "paypal", "cashapp", "zelle",
-                    "discussions.", "tripleseat",
-                ]):
+
+                # ✅ FIX: aggressive commercial/marketing filter
+                if _is_commercial_email(email_addr, part):
                     continue
+
                 name = ""
                 m = re.match(r"^(.+?)\s*<", part)
                 if m:
                     name = m.group(1).strip().strip('"').strip("'")
-                # if no query, return all contacts
+
+                # skip if name looks commercial (all caps, has emojis, too long)
+                if name and (name.isupper() or len(name) > 40 or any(ord(c) > 127 for c in name)):
+                    continue
+
                 if not query:
                     seen.add(email_addr)
                     contacts.append({"name": name or email_addr, "email": email_addr})
@@ -1042,6 +1036,43 @@ def search_contacts_service(provider: str, query: str, max_scan: int = 30) -> Li
     else:
         contacts.sort(key=lambda c: c["name"].lower())
     return contacts[:10]
+
+
+def _is_commercial_email(email_addr: str, raw_header: str = "") -> bool:
+    """Detect if an email address is from a commercial/marketing source."""
+    addr = email_addr.lower()
+    # skip common marketing prefixes
+    skip_prefixes = [
+        "noreply", "no-reply", "donotreply", "do-not-reply",
+        "info@", "hello@", "team@", "news@", "updates@", "hi@",
+        "billing@", "orders@", "shipping@", "delivery@",
+        "notifications@", "newsletter@", "marketing@", "promo@",
+        "sales@", "support@", "help@", "contact@", "automated@",
+    ]
+    if any(addr.startswith(p) for p in skip_prefixes):
+        return True
+    # skip marketing email server domains (eml., email., e2., mail., m.)
+    domain = addr.split("@")[-1] if "@" in addr else ""
+    commercial_domain_prefixes = ["eml.", "email.", "e2.", "mail.", "m.", "send.", "msg.", "post.", "em."]
+    if any(domain.startswith(p) for p in commercial_domain_prefixes):
+        return True
+    # skip known commercial domains
+    commercial_domains = [
+        "nordstrom", "bloomingdale", "bananarepublic", "amazon", "apple.com",
+        "google.com", "facebook", "instagram", "twitter", "linkedin",
+        "spotify", "netflix", "uber", "lyft", "venmo", "paypal",
+        "cashapp", "zelle", "tripleseat", "vspink", "gap.com",
+        "oldnavy", "target", "walmart", "bestbuy", "macys",
+        "sephora", "ulta", "nike", "adidas", "starbucks",
+        "doordash", "grubhub", "ubereats", "postmates",
+        "square", "stripe", "shopify", "etsy", "ebay",
+    ]
+    if any(cd in domain for cd in commercial_domains):
+        return True
+    # skip if domain has too many parts (usually marketing: email.company.com)
+    if domain.count(".") >= 3:
+        return True
+    return False
 
 
 def resolve_contact_name(provider: str, name: str) -> Optional[str]:
