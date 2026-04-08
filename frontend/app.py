@@ -101,7 +101,7 @@ def run_prompt(prompt: str):
     except Exception as e:
         push({"message": "Backend error"}, {"status": "error", "detail": str(e)})
 
-def book(title, start, duration_min, attendees=None, pending_reply=None):
+def book(title, start, duration_min, attendees=None, pending_reply=None, pending_draft=None):
     attendees = attendees or []
     p = prov()
     try:
@@ -112,6 +112,9 @@ def book(title, start, duration_min, attendees=None, pending_reply=None):
         res.raise_for_status()
         result = res.json()
         reply_result = None
+        draft_result = None
+
+        # handle pending reply (reply_and_create_event flow)
         if pending_reply:
             try:
                 body = pending_reply.get("body", "")
@@ -128,10 +131,37 @@ def book(title, start, duration_min, attendees=None, pending_reply=None):
                                    timeout=15)
                 r2.raise_for_status(); reply_result = r2.json()
             except Exception: pass
+
+        # ✅ NEW: handle pending draft (draft_and_create_event flow)
+        if pending_draft:
+            try:
+                body = pending_draft.get("body", "")
+                # update body with the chosen time
+                if start:
+                    try:
+                        from zoneinfo import ZoneInfo
+                        ts = datetime.fromisoformat(start).astimezone(ZoneInfo("America/New_York")).strftime("%I:%M %p").lstrip("0")
+                        body = re.sub(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b', ts, body, flags=re.IGNORECASE)
+                        # if no time in body, append it
+                        if ts.lower() not in body.lower():
+                            body += f"\n\nThe meeting is scheduled for {ts}."
+                    except Exception: pass
+                r3 = requests.post(f"{API_BASE}/integrations/{p}/create-draft",
+                                   json={"to": pending_draft.get("to", ""),
+                                         "subject": pending_draft.get("subject", ""),
+                                         "body": body},
+                                   timeout=15)
+                r3.raise_for_status(); draft_result = r3.json()
+            except Exception: pass
+
         if reply_result:
             push({"action": "reply_and_create_event"},
                  {"status": "success", "reply": reply_result, "calendar": result,
                   "message": "Reply draft and event created."})
+        elif draft_result:
+            push({"action": "draft_email_and_create_event"},
+                 {"status": "success", "draft": draft_result, "calendar": result,
+                  "message": "Email draft and event created."})
         else:
             push({"action": "create_event", "provider": p, "title": title,
                   "start": start, "duration_min": int(duration_min),
@@ -213,7 +243,7 @@ def draft_card(label: str, em: dict, draft: dict, sent_key: str, send_url: str):
 
 
 def time_option_card(label: str, start_raw: str, dur: int, attendees: list,
-                     btn_key: str, title: str, pending_reply=None):
+                     btn_key: str, title: str, pending_reply=None, pending_draft=None):
     with st.container(border=True):
         col1, col2 = st.columns([3, 1])
         col1.markdown(f"**{label}**")
@@ -221,19 +251,21 @@ def time_option_card(label: str, start_raw: str, dur: int, attendees: list,
         st.caption(f"🕐 {fmt(start_raw)}  ·  {dur} min")
         if attendees: st.caption("👥 " + "  ·  ".join(attendees))
         if pending_reply: st.caption("_Will also create the reply draft._")
+        if pending_draft: st.caption("_Will also create the email draft._")
         if st.button("Book this time", key=btn_key, use_container_width=True, type="primary"):
             book(title=title, start=start_raw, duration_min=int(dur),
-                 attendees=attendees, pending_reply=pending_reply)
+                 attendees=attendees, pending_reply=pending_reply, pending_draft=pending_draft)
 
 
 def custom_time_picker(title: str, duration: int, attendees: list,
-                       key_prefix: str, pending_reply=None):
+                       key_prefix: str, pending_reply=None, pending_draft=None):
     with st.container(border=True):
         st.markdown("**Pick a custom time**")
         c1, c2 = st.columns(2)
         date_ = c1.date_input("Date", key=f"{key_prefix}_date")
         time_ = c2.time_input("Time", key=f"{key_prefix}_time", value=None)
         if pending_reply: st.caption("_Will also create the reply draft._")
+        if pending_draft: st.caption("_Will also create the email draft._")
         if st.button("Book", key=f"{key_prefix}_book", use_container_width=True):
             if date_ and time_:
                 from zoneinfo import ZoneInfo
@@ -241,7 +273,7 @@ def custom_time_picker(title: str, duration: int, attendees: list,
                 combined = datetime(date_.year, date_.month, date_.day,
                                     time_.hour, time_.minute, tzinfo=tz)
                 book(title=title, start=combined.isoformat(), duration_min=int(duration),
-                     attendees=attendees, pending_reply=pending_reply)
+                     attendees=attendees, pending_reply=pending_reply, pending_draft=pending_draft)
             else:
                 st.warning("Select both date and time.")
 
@@ -352,7 +384,7 @@ def render_proposed_event(proposed: dict):
 
 
 def render_alternatives(alternatives: list, proposed_event: dict = None,
-                        key_prefix: str = "alt", pending_reply=None):
+                        key_prefix: str = "alt", pending_reply=None, pending_draft=None):
     proposed_event = proposed_event or {}
     title     = proposed_event.get("title") or "Meeting"
     attendees = proposed_event.get("attendee_emails") or []
@@ -369,10 +401,11 @@ def render_alternatives(alternatives: list, proposed_event: dict = None,
                 btn_key=f"{key_prefix}_{idx}_{alt.get('start','')}",
                 title=title,
                 pending_reply=pending_reply,
+                pending_draft=pending_draft,
             )
 
     custom_time_picker(title=title, duration=duration, attendees=attendees,
-                       key_prefix=key_prefix, pending_reply=pending_reply)
+                       key_prefix=key_prefix, pending_reply=pending_reply, pending_draft=pending_draft)
 
 
 def render_meeting_options(decision: dict, result: dict, key_prefix: str = "sug"):
@@ -471,12 +504,14 @@ def render_draft_and_create(result: dict):
     if s == "partial_success":
         if result.get("draft"): render_created_draft(result["draft"])
         cal = result.get("calendar") or {}
+        # ✅ FIX: get pending_draft for conflict flow
+        pending_draft = result.get("pending_draft")
         cs  = cal.get("status")
         if cs == "conflict_detected":
             render_conflicts(cal.get("conflicts") or [])
             render_proposed_event(cal.get("proposed_event") or {})
             render_alternatives(cal.get("alternatives") or [], cal.get("proposed_event") or {},
-                                key_prefix="d_alt")
+                                key_prefix="d_alt", pending_draft=pending_draft)
         elif cs == "needs_clarification": render_needs_clarification(cal)
         elif cs == "created":             render_created_event(cal)
         return

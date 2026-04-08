@@ -745,14 +745,12 @@ def assistant(payload: ParseIntentRequest):
                     "example": f'Draft an email to {recipient}@example.com saying I am available tomorrow at 2pm and create the meeting',
                 }
             else:
-                draft_result = create_gmail_draft_service(
-                    provider=provider,
-                    to=str(recipient),
-                    subject=str(subject),
-                    body=str(body),
-                )
-
+                # ✅ FIX: if conflict, DON'T create draft yet — save as pending
                 if not event_start:
+                    draft_result = create_gmail_draft_service(
+                        provider=provider, to=str(recipient),
+                        subject=str(subject), body=str(body),
+                    )
                     result = {
                         "status": "partial_success",
                         "draft": draft_result,
@@ -765,10 +763,15 @@ def assistant(payload: ParseIntentRequest):
                 elif has_conflicts:
                     result = {
                         "status": "partial_success",
-                        "draft": draft_result,
+                        "draft": None,
+                        "pending_draft": {
+                            "to": str(recipient),
+                            "subject": str(subject),
+                            "body": str(body),
+                        },
                         "calendar": {
                             "status": "conflict_detected",
-                            "message": "Draft created, but I did not create the calendar event because of a conflict.",
+                            "message": "I found a conflict. Pick an alternative time — I'll create both the draft and event together.",
                             "conflicts": conflicts,
                             "alternatives": alternatives,
                             "proposed_event": {
@@ -778,9 +781,13 @@ def assistant(payload: ParseIntentRequest):
                                 "attendee_emails": attendee_emails,
                             },
                         },
-                        "message": "Draft created. Calendar event not created because of a conflict.",
+                        "message": "Conflict detected — choose an alternative time first.",
                     }
                 else:
+                    draft_result = create_gmail_draft_service(
+                        provider=provider, to=str(recipient),
+                        subject=str(subject), body=str(body),
+                    )
                     calendar_result = create_event_service(
                         provider=provider,
                         title=str(event_title),
