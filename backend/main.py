@@ -18,8 +18,7 @@ from .integrations import (
     read_email_service,
     _extract_email_address,
 )
-# ✅ FIX: importar generate_reply_draft para regenerar el body con contexto real del email
-from .ai_drafts import generate_reply_draft
+from .ai_drafts import generate_reply_draft, generate_email_draft
 
 app = FastAPI(title="ExecAI Backend")
 app.include_router(integrations_router)
@@ -32,6 +31,8 @@ app.include_router(integrations_router)
 class ParseIntentRequest(BaseModel):
     text: str
     provider: Optional[str] = "google"
+    # ✅ NEW: contexto de la última acción para follow-ups
+    last_context: Optional[Dict[str, Any]] = None
 
 
 class CreateEventRequest(BaseModel):
@@ -115,7 +116,6 @@ def _resolve_target_email(
     return None
 
 
-# ✅ FIX: nueva función que regenera el body del reply usando el email real
 def _build_contextual_reply_body(
     target_email: Dict[str, Any],
     body_hint: Optional[str],
@@ -133,6 +133,133 @@ def _build_contextual_reply_body(
         body_hint=body_hint,
     )
     return result.get("body") or body_hint or "Thanks for the update."
+
+
+# -----------------------
+# ✅ NEW: FOLLOW-UP HANDLER
+# -----------------------
+
+def _detect_followup_tone(text: str) -> Optional[str]:
+    t = text.lower()
+    if any(w in t for w in ["professional", "formal", "seriously", "serious"]):
+        return "professional"
+    if any(w in t for w in ["friendly", "casual", "nice", "nicer", "warm", "warmer", "relaxed"]):
+        return "friendly"
+    if any(w in t for w in ["short", "shorter", "brief", "concise", "simpler"]):
+        return "concise"
+    return None
+
+
+def _is_followup(text: str, last_context: Optional[Dict[str, Any]]) -> bool:
+    """Check if the message looks like a follow-up to the previous action."""
+    if not last_context:
+        return False
+    t = text.lower().strip()
+    followup_signals = [
+        "make it", "change it", "more ", "less ", "too ",
+        "not ", "don't like", "didn't like", "i don't",
+        "try again", "redo", "rewrite", "rephrase",
+        "actually", "instead", "but ", "no,", "nah",
+        "shorter", "longer", "nicer", "friendlier",
+        "more professional", "more casual", "more formal",
+        "add ", "remove ", "include ", "also ",
+        "can you", "could you", "please ",
+        "that's not", "that doesn't", "wrong ",
+    ]
+    return any(signal in t for signal in followup_signals)
+
+
+def _handle_followup(
+    text: str,
+    last_context: Dict[str, Any],
+    provider: str,
+) -> Optional[Dict[str, Any]]:
+    """Handle follow-up messages based on the last action's context."""
+
+    last_action = (last_context.get("action") or "").lower()
+    last_result = last_context.get("result") or {}
+    last_decision = last_context.get("decision") or {}
+
+    # --- Follow-up on DRAFT ---
+    if last_action in {"create_draft", "draft_email"}:
+        prev_email = last_result.get("email") or {}
+        recipient = prev_email.get("to") or ""
+        subject = prev_email.get("subject") or "Quick Follow-Up"
+        prev_body = prev_email.get("body") or ""
+
+        new_tone = _detect_followup_tone(text) or "professional"
+
+        # Use AI to regenerate with the follow-up instruction
+        ai_result = generate_email_draft(
+            recipient=recipient,
+            topic=subject,
+            tone=new_tone,
+            body_hint=f"Previous draft:\n{prev_body}\n\nUser feedback: {text}",
+            subject=subject,
+        )
+        new_body = ai_result.get("body") or prev_body
+
+        if recipient and "@" in recipient:
+            result = create_gmail_draft_service(
+                provider=provider,
+                to=recipient,
+                subject=subject,
+                body=new_body,
+            )
+        else:
+            result = {
+                "status": "draft_created",
+                "draft": {"id": "followup", "messageId": "followup", "threadId": "", "labelIds": []},
+                "email": {"to": recipient, "subject": subject, "body": new_body},
+            }
+
+        return {
+            "intent_data": {"intent": "followup_draft", "entities": {}, "mode": "followup", "original_text": text},
+            "decision": {"action": "create_draft", "message": "Here's the updated draft."},
+            "result": result,
+        }
+
+    # --- Follow-up on REPLY ---
+    if last_action in {"reply_email", "create_reply_draft"}:
+        prev_email = last_result.get("email") or {}
+        to = prev_email.get("to") or ""
+        subject = prev_email.get("subject") or "Quick Follow-Up"
+        prev_body = prev_email.get("body") or ""
+        thread_id = (last_result.get("draft") or {}).get("threadId") or ""
+
+        new_tone = _detect_followup_tone(text) or "neutral"
+
+        ai_result = generate_reply_draft(
+            original_subject=subject,
+            original_body=None,
+            original_sender=to,
+            tone=new_tone,
+            body_hint=f"Previous reply:\n{prev_body}\n\nUser feedback: {text}",
+        )
+        new_body = ai_result.get("body") or prev_body
+
+        if to and thread_id:
+            result = create_gmail_reply_draft_service(
+                provider=provider,
+                to=to,
+                subject=subject,
+                body=new_body,
+                thread_id=thread_id,
+            )
+        else:
+            result = {
+                "status": "reply_draft_created",
+                "draft": {"id": "followup", "messageId": "followup", "threadId": thread_id, "labelIds": []},
+                "email": {"to": to, "subject": subject, "body": new_body},
+            }
+
+        return {
+            "intent_data": {"intent": "followup_reply", "entities": {}, "mode": "followup", "original_text": text},
+            "decision": {"action": "reply_email", "message": "Here's the updated reply."},
+            "result": result,
+        }
+
+    return None
 
 
 # -----------------------
@@ -163,9 +290,29 @@ def assistant(payload: ParseIntentRequest):
         raise HTTPException(status_code=400, detail="Text is required.")
 
     request_provider = (payload.provider or "google").strip().lower()
+    last_context = payload.last_context
+
+    # ✅ NEW: Check for follow-up BEFORE normal intent parsing
+    if last_context and _is_followup(text, last_context):
+        try:
+            followup_result = _handle_followup(text, last_context, request_provider)
+            if followup_result:
+                return followup_result
+        except Exception:
+            pass  # Fall through to normal flow if follow-up fails
 
     intent_data = parse_intent_ai(text)
     decision = handle_intent(intent_data)
+
+    # ✅ NEW: If intent is unknown but we have context, try follow-up as fallback
+    intent = (intent_data.get("intent") or "").strip()
+    if intent == "unknown" and last_context:
+        try:
+            followup_result = _handle_followup(text, last_context, request_provider)
+            if followup_result:
+                return followup_result
+        except Exception:
+            pass
 
     existing_result = (decision or {}).get("result")
     if existing_result is not None:
@@ -187,7 +334,6 @@ def assistant(payload: ParseIntentRequest):
             if days is None:
                 days = entities.get("days", 7)
             timeframe = (entities.get("timeframe") or "").lower()
-            # ✅ FIX Bug E: para "today" usar start-of-day local, no UTC now
             if timeframe == "today":
                 from zoneinfo import ZoneInfo
                 from datetime import timezone
@@ -236,7 +382,6 @@ def assistant(payload: ParseIntentRequest):
                     },
                 }
             else:
-                # ✅ FEATURE 1: mostrar preview antes de crear
                 result = {
                     "status": "pending_confirmation",
                     "provider": provider,
@@ -342,9 +487,7 @@ def assistant(payload: ParseIntentRequest):
                         "message": "I found the email, but I couldn't extract the thread ID.",
                     }
                 else:
-                    # ✅ FIX: regenerar el body con el contenido real del email
                     body = _build_contextual_reply_body(target_email, body_hint, tone)
-
                     result = create_gmail_reply_draft_service(
                         provider=provider,
                         to=to_email,
@@ -393,14 +536,11 @@ def assistant(payload: ParseIntentRequest):
                         "message": "I found the email, but I couldn't extract the thread ID.",
                     }
                 else:
-                    # ✅ FIX Bug D: verificar conflicto PRIMERO antes de crear el reply
                     if has_conflicts:
-                        # ✅ Generar el body del reply ahora para guardarlo como pending
                         pending_body = _build_contextual_reply_body(target_email, body_hint, tone)
                         result = {
                             "status": "partial_success",
                             "reply": None,
-                            # ✅ pending_reply: contexto para crear el reply cuando el usuario elija una alternativa
                             "pending_reply": {
                                 "to": to_email,
                                 "subject": subject,
@@ -422,7 +562,6 @@ def assistant(payload: ParseIntentRequest):
                             "message": "Conflict detected — choose an alternative time first.",
                         }
                     elif not event_start:
-                        # No conflict, but no start time — create reply only
                         body = _build_contextual_reply_body(target_email, body_hint, tone)
                         reply_result = create_gmail_reply_draft_service(
                             provider=provider,
@@ -440,7 +579,6 @@ def assistant(payload: ParseIntentRequest):
                             },
                         }
                     else:
-                        # No conflict — create reply AND event
                         body = _build_contextual_reply_body(target_email, body_hint, tone)
                         reply_result = create_gmail_reply_draft_service(
                             provider=provider,

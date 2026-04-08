@@ -59,12 +59,28 @@ def check_status():
     except Exception:
         st.session_state.google_status = st.session_state.outlook_status = False
 
+
+# ✅ NEW: Build context from last assistant message for follow-ups
+def _build_last_context():
+    """Extract the last assistant action + result for multi-turn context."""
+    for msg in reversed(st.session_state.messages):
+        if msg.get("role") == "assistant":
+            decision = msg.get("decision") or {}
+            result = msg.get("result") or {}
+            action = decision.get("action") or ""
+            if action:
+                return {"action": action, "decision": decision, "result": result}
+    return None
+
+
 def run_prompt(prompt: str):
     if not prompt.strip(): return
     st.session_state.messages.append({"role": "user", "content": prompt})
     try:
+        # ✅ NEW: send last_context for follow-up detection
         res = requests.post(f"{API_BASE}/assistant",
-                            json={"text": prompt, "provider": prov()}, timeout=25)
+                            json={"text": prompt, "provider": prov(),
+                                  "last_context": _build_last_context()}, timeout=25)
         res.raise_for_status()
         d           = res.json()
         intent_data = d.get("intent_data", {})
@@ -128,7 +144,6 @@ def book(title, start, duration_min, attendees=None, pending_reply=None):
 # ── Card components (all native Streamlit) ─────────────────────────────────
 
 def event_card(e: dict, provider: str = None):
-    """Single event — read-only display."""
     with st.container(border=True):
         col1, col2 = st.columns([3, 1])
         col1.markdown(f"**{e.get('title') or '(No title)'}**")
@@ -139,7 +154,6 @@ def event_card(e: dict, provider: str = None):
 
 
 def event_card_with_delete(event: dict, provider: str):
-    """Created event card with delete button."""
     event_id = event.get("id")
     del_key  = f"del_{event_id}"
     if st.session_state.get(del_key):
@@ -608,7 +622,7 @@ with st.expander("🛠 Quick tools", expanded=False):
         st.caption("**Quick draft**")
         to_  = st.text_input("To",      key="qt_to",  placeholder="email@example.com",  label_visibility="collapsed")
         sub_ = st.text_input("Subject", key="qt_sub", placeholder="Subject",             label_visibility="collapsed")
-        bod_ = st.text_area("",         key="qt_bod", placeholder="Message…", height=68, label_visibility="collapsed")
+        bod_ = st.text_area("Message",  key="qt_bod", placeholder="Message…", height=68, label_visibility="collapsed")
         if st.button("Create draft", use_container_width=True, key="t_draft"):
             try:
                 # ✅ FIX: usa provider dinámico en vez de hardcoded "google"
@@ -652,8 +666,10 @@ if prompt:
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
+                # ✅ NEW: send last_context for follow-up detection
                 res = requests.post(f"{API_BASE}/assistant",
-                                    json={"text": prompt, "provider": prov()}, timeout=25)
+                                    json={"text": prompt, "provider": prov(),
+                                          "last_context": _build_last_context()}, timeout=25)
                 res.raise_for_status()
                 d           = res.json()
                 intent_data = d.get("intent_data", {})
