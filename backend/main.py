@@ -494,22 +494,34 @@ def assistant(payload: ParseIntentRequest):
             elif "@" not in str(recipient):
                 # ✅ NEW: show contact suggestions when name not found
                 from .integrations import search_contacts_service
-                suggestions = search_contacts_service(provider, str(recipient), max_scan=20)
+                # first try exact name match
+                suggestions = search_contacts_service(provider, str(recipient), max_scan=30)
                 if suggestions:
-                    suggestion_list = ", ".join(f"{c['name']} ({c['email']})" for c in suggestions[:3])
+                    suggestion_list = ", ".join(f"{c['name']} ({c['email']})" for c in suggestions[:5])
                     result = {
                         "status": "needs_clarification",
                         "missing": ["recipient_email"],
-                        "message": f'I found contacts matching "{recipient}": {suggestion_list}. Which one?',
-                        "suggestions": suggestions[:3],
+                        "message": f'I found contacts matching "{recipient}": {suggestion_list}. Which one? You can say the full email or just the name.',
+                        "suggestions": suggestions[:5],
                     }
                 else:
-                    result = {
-                        "status": "needs_clarification",
-                        "missing": ["recipient_email"],
-                        "message": f'I understood the recipient as "{recipient}", but I need the full email address.',
-                        "example": f'Draft an email to {recipient}@example.com about the proposal',
-                    }
+                    # no match — show recent contacts as options
+                    all_contacts = search_contacts_service(provider, "", max_scan=30)
+                    if all_contacts:
+                        contact_list = ", ".join(f"{c['name']} ({c['email']})" for c in all_contacts[:5])
+                        result = {
+                            "status": "needs_clarification",
+                            "missing": ["recipient_email"],
+                            "message": f'I couldn\'t find "{recipient}" in your contacts. Here are some recent contacts: {contact_list}. Try the full email address.',
+                            "suggestions": all_contacts[:5],
+                        }
+                    else:
+                        result = {
+                            "status": "needs_clarification",
+                            "missing": ["recipient_email"],
+                            "message": f'I understood the recipient as "{recipient}", but I need the full email address.',
+                            "example": f'Draft an email to {recipient}@example.com about the proposal',
+                        }
             else:
                 result = create_gmail_draft_service(
                     provider=provider,

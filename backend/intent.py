@@ -40,6 +40,11 @@ _STOP_WORDS = {
     "please", "could", "would", "should", "can", "will", "just",
     "tomorrow", "today", "next", "week", "month", "calendar",
     "meeting", "event", "appointment", "schedule",
+    "team", "group", "everyone", "somebody", "someone", "nobody",
+    "here", "there", "then", "now", "back", "again",
+    "saying", "telling", "asking", "writing", "drafting",
+    "professional", "friendly", "casual", "formal",
+    "propose", "proposal", "proposa",
 }
 
 
@@ -222,22 +227,29 @@ def _extract_recipient(text: str) -> Optional[str]:
     if email_match:
         return email_match.group(0).lower()
 
-    # 2. "email Sarah" or "email John" (capitalized name after "email")
-    m = re.search(r"\bemail\s+([A-Z][a-z]+)\b", t)
+    # 2. "email Sarah" or "email gavin" (name after "email")
+    m = re.search(r"\bemail\s+([A-Za-z][a-z]+)\b", t)
     if m:
         name = m.group(1).lower()
         if name not in _STOP_WORDS:
             return name
 
-    # 3. "to Sarah" when context is clearly about drafting/sending
+    # 3. "to Sarah" / "to gavin" when context is clearly about drafting/sending
     drafting_context = any(w in t.lower() for w in [
         "draft", "write", "compose", "send", "email to", "message to",
         "reach out to", "shoot", "need to send",
     ])
     if drafting_context:
+        # try capitalized first
         m2 = re.search(r"\bto\s+([A-Z][a-z]+)\b", t)
         if m2:
             name = m2.group(1).lower()
+            if name not in _STOP_WORDS:
+                return name
+        # also try lowercase names (user might not capitalize)
+        m3 = re.search(r"\bto\s+([a-z]{2,})\b", t.lower())
+        if m3:
+            name = m3.group(1).lower()
             if name not in _STOP_WORDS:
                 return name
 

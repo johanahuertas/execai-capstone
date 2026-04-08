@@ -986,10 +986,9 @@ def outlook_create_reply_draft(payload: CreateReplyDraftRequest):
 # -----------------------
 
 def search_contacts_service(provider: str, query: str, max_scan: int = 30) -> List[Dict[str, str]]:
-    """Search recent emails for contacts matching a name or partial email."""
+    """Search recent emails for contacts matching a name or partial email.
+       If query is empty, return all recent unique contacts."""
     query = (query or "").strip().lower()
-    if not query or len(query) < 2:
-        return []
 
     try:
         emails_data = list_emails_service(provider=provider, max_results=max_scan, inbox_only=False, primary_only=False)
@@ -1004,7 +1003,6 @@ def search_contacts_service(provider: str, query: str, max_scan: int = 30) -> Li
             raw = em.get(field) or ""
             if not raw:
                 continue
-            # handle comma-separated (To field)
             for part in raw.split(","):
                 part = part.strip()
                 if not part:
@@ -1012,18 +1010,25 @@ def search_contacts_service(provider: str, query: str, max_scan: int = 30) -> Li
                 email_addr = _extract_email_address(part)
                 if not email_addr or email_addr in seen:
                     continue
-                # extract display name
+                # skip noreply and system addresses
+                if any(skip in email_addr for skip in ["noreply", "no-reply", "mailer-daemon", "postmaster", "notifications"]):
+                    continue
                 name = ""
                 m = re.match(r"^(.+?)\s*<", part)
                 if m:
                     name = m.group(1).strip().strip('"').strip("'")
-                # match against query
-                if query in email_addr.lower() or query in name.lower():
+                # if no query, return all contacts
+                if not query:
+                    seen.add(email_addr)
+                    contacts.append({"name": name or email_addr, "email": email_addr})
+                elif query in email_addr.lower() or query in name.lower():
                     seen.add(email_addr)
                     contacts.append({"name": name or email_addr, "email": email_addr})
 
-    # sort: exact name starts first
-    contacts.sort(key=lambda c: (0 if c["name"].lower().startswith(query) else 1, c["name"].lower()))
+    if query:
+        contacts.sort(key=lambda c: (0 if c["name"].lower().startswith(query) else 1, c["name"].lower()))
+    else:
+        contacts.sort(key=lambda c: c["name"].lower())
     return contacts[:10]
 
 
