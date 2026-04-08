@@ -17,7 +17,11 @@ from .integrations import (
     create_gmail_reply_draft_service,
     read_email_service,
     _extract_email_address,
+    resolve_contact_name,
 )
+import re as _re
+
+EMAIL_REGEX = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
 from .ai_drafts import generate_reply_draft, generate_email_draft
 
 app = FastAPI(title="ExecAI Backend")
@@ -186,6 +190,19 @@ def _handle_followup(
         recipient = prev_email.get("to") or ""
         subject = prev_email.get("subject") or "Quick Follow-Up"
         prev_body = prev_email.get("body") or ""
+
+        # ✅ NEW: detect if user wants to change recipient
+        new_email_match = _re.search(EMAIL_REGEX, text)
+        if new_email_match:
+            recipient = new_email_match.group(0).lower()
+        else:
+            # check for name-based recipient change: "send it to Sarah instead"
+            name_match = _re.search(r"\bto\s+([A-Z][a-z]+)\b", text)
+            if name_match:
+                name = name_match.group(1)
+                resolved = resolve_contact_name(provider, name)
+                if resolved:
+                    recipient = resolved
 
         new_tone = _detect_followup_tone(text) or "professional"
 
@@ -434,6 +451,12 @@ def assistant(payload: ParseIntentRequest):
             subject = (decision or {}).get("subject") or entities.get("subject") or "Quick Follow-Up"
             body = (decision or {}).get("body") or entities.get("body_hint") or ""
 
+            # ✅ NEW: auto-resolve name to email from contacts
+            if recipient and "@" not in str(recipient):
+                resolved = resolve_contact_name(provider, str(recipient))
+                if resolved:
+                    recipient = resolved
+
             if not recipient:
                 result = {
                     "status": "needs_clarification",
@@ -442,12 +465,24 @@ def assistant(payload: ParseIntentRequest):
                     "example": 'Try: "Draft an email to sarah@example.com about the proposal"',
                 }
             elif "@" not in str(recipient):
-                result = {
-                    "status": "needs_clarification",
-                    "missing": ["recipient_email"],
-                    "message": f'I understood the recipient as "{recipient}", but I need the full email address.',
-                    "example": f'Draft an email to {recipient}@example.com about the proposal',
-                }
+                # ✅ NEW: show contact suggestions when name not found
+                from .integrations import search_contacts_service
+                suggestions = search_contacts_service(provider, str(recipient), max_scan=20)
+                if suggestions:
+                    suggestion_list = ", ".join(f"{c['name']} ({c['email']})" for c in suggestions[:3])
+                    result = {
+                        "status": "needs_clarification",
+                        "missing": ["recipient_email"],
+                        "message": f'I found contacts matching "{recipient}": {suggestion_list}. Which one?',
+                        "suggestions": suggestions[:3],
+                    }
+                else:
+                    result = {
+                        "status": "needs_clarification",
+                        "missing": ["recipient_email"],
+                        "message": f'I understood the recipient as "{recipient}", but I need the full email address.',
+                        "example": f'Draft an email to {recipient}@example.com about the proposal',
+                    }
             else:
                 result = create_gmail_draft_service(
                     provider=provider,

@@ -979,3 +979,63 @@ def outlook_create_draft(payload: CreateDraftRequest):
 @router.post("/outlook/create-reply-draft")
 def outlook_create_reply_draft(payload: CreateReplyDraftRequest):
     return create_gmail_reply_draft_service("outlook", payload.to, payload.subject, payload.body, payload.thread_id)
+
+
+# -----------------------
+# ✅ NEW: CONTACT SEARCH (from email history)
+# -----------------------
+
+def search_contacts_service(provider: str, query: str, max_scan: int = 30) -> List[Dict[str, str]]:
+    """Search recent emails for contacts matching a name or partial email."""
+    query = (query or "").strip().lower()
+    if not query or len(query) < 2:
+        return []
+
+    try:
+        emails_data = list_emails_service(provider=provider, max_results=max_scan, inbox_only=False, primary_only=False)
+    except Exception:
+        return []
+
+    seen = set()
+    contacts: List[Dict[str, str]] = []
+
+    for em in emails_data.get("emails", []):
+        for field in ["from", "to"]:
+            raw = em.get(field) or ""
+            if not raw:
+                continue
+            # handle comma-separated (To field)
+            for part in raw.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                email_addr = _extract_email_address(part)
+                if not email_addr or email_addr in seen:
+                    continue
+                # extract display name
+                name = ""
+                m = re.match(r"^(.+?)\s*<", part)
+                if m:
+                    name = m.group(1).strip().strip('"').strip("'")
+                # match against query
+                if query in email_addr.lower() or query in name.lower():
+                    seen.add(email_addr)
+                    contacts.append({"name": name or email_addr, "email": email_addr})
+
+    # sort: exact name starts first
+    contacts.sort(key=lambda c: (0 if c["name"].lower().startswith(query) else 1, c["name"].lower()))
+    return contacts[:10]
+
+
+def resolve_contact_name(provider: str, name: str) -> Optional[str]:
+    """Try to find an email address for a contact name. Returns email or None."""
+    results = search_contacts_service(provider, name, max_scan=20)
+    if results:
+        return results[0]["email"]
+    return None
+
+
+@router.get("/contacts/search")
+def search_contacts(q: str = "", provider: str = "google"):
+    results = search_contacts_service(provider, q)
+    return {"query": q, "provider": provider, "contacts": results}
