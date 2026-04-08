@@ -174,6 +174,13 @@ def _is_followup(text: str, last_context: Optional[Dict[str, Any]]) -> bool:
     if not last_context:
         return False
     t = text.lower().strip()
+
+    # ✅ NEW: if last action needed clarification and user provides email, it's a follow-up
+    last_result = last_context.get("result") or {}
+    if last_result.get("status") == "needs_clarification":
+        if _re.search(EMAIL_REGEX, text):
+            return True
+
     followup_signals = [
         "make it", "change it", "more ", "less ", "too ",
         "not ", "don't like", "didn't like", "i don't",
@@ -200,6 +207,29 @@ def _handle_followup(
     last_action = (last_context.get("action") or "").lower()
     last_result = last_context.get("result") or {}
     last_decision = last_context.get("decision") or {}
+
+    # ✅ NEW: handle clarification follow-ups (user provides email after suggestion)
+    if last_result.get("status") == "needs_clarification":
+        email_match = _re.search(EMAIL_REGEX, text)
+        if email_match and last_action in {"create_draft", "draft_email"}:
+            new_recipient = email_match.group(0).lower()
+            subject = last_decision.get("subject") or "Quick Follow-Up"
+            body = last_decision.get("body") or ""
+            if not body:
+                body_result = generate_email_draft(
+                    recipient=new_recipient, topic=subject,
+                    tone="professional", subject=subject,
+                )
+                body = body_result.get("body") or ""
+            result = create_gmail_draft_service(
+                provider=provider, to=new_recipient,
+                subject=subject, body=body,
+            )
+            return {
+                "intent_data": {"intent": "followup_clarification", "entities": {"recipient": new_recipient}, "mode": "followup", "original_text": text},
+                "decision": {"action": "create_draft", "message": f"Draft created for {new_recipient}."},
+                "result": result,
+            }
 
     # --- Follow-up on DRAFT ---
     if last_action in {"create_draft", "draft_email"}:
@@ -478,12 +508,6 @@ def assistant(payload: ParseIntentRequest):
             subject = (decision or {}).get("subject") or entities.get("subject") or "Quick Follow-Up"
             body = (decision or {}).get("body") or entities.get("body_hint") or ""
 
-            # ✅ NEW: auto-resolve name to email from contacts
-            if recipient and "@" not in str(recipient):
-                resolved = resolve_contact_name(provider, str(recipient))
-                if resolved:
-                    recipient = resolved
-
             if not recipient:
                 result = {
                     "status": "needs_clarification",
@@ -492,35 +516,49 @@ def assistant(payload: ParseIntentRequest):
                     "example": 'Try: "Draft an email to sarah@example.com about the proposal"',
                 }
             elif "@" not in str(recipient):
-                # ✅ NEW: show contact suggestions when name not found
+                # ✅ FIX: never auto-resolve — always show suggestions and let user confirm
                 from .integrations import search_contacts_service
-                # first try exact name match
                 suggestions = search_contacts_service(provider, str(recipient), max_scan=30)
-                if suggestions:
-                    suggestion_list = ", ".join(f"{c['name']} ({c['email']})" for c in suggestions[:5])
+                # filter out marketing/noreply addresses from suggestions
+                real_contacts = [c for c in suggestions if not any(
+                    skip in c["email"] for skip in [
+                        "noreply", "no-reply", "mailer-daemon", "postmaster",
+                        "notifications", "newsletter", "marketing", "promo",
+                        "factory", "store", "shop", "sales", "support", "info@",
+                    ]
+                )]
+                if real_contacts:
+                    suggestion_list = "\n".join(f"• {c['name']} — {c['email']}" for c in real_contacts[:5])
                     result = {
                         "status": "needs_clarification",
                         "missing": ["recipient_email"],
-                        "message": f'I found contacts matching "{recipient}": {suggestion_list}. Which one? You can say the full email or just the name.',
-                        "suggestions": suggestions[:5],
+                        "message": f'I found contacts matching "{recipient}":\n{suggestion_list}\n\nWhich one? Reply with the full email address.',
+                        "suggestions": real_contacts[:5],
                     }
                 else:
-                    # no match — show recent contacts as options
+                    # no good match — show all real contacts
                     all_contacts = search_contacts_service(provider, "", max_scan=30)
-                    if all_contacts:
-                        contact_list = ", ".join(f"{c['name']} ({c['email']})" for c in all_contacts[:5])
+                    real_all = [c for c in all_contacts if not any(
+                        skip in c["email"] for skip in [
+                            "noreply", "no-reply", "mailer-daemon", "postmaster",
+                            "notifications", "newsletter", "marketing", "promo",
+                            "factory", "store", "shop", "sales", "support", "info@",
+                        ]
+                    )]
+                    if real_all:
+                        contact_list = "\n".join(f"• {c['name']} — {c['email']}" for c in real_all[:5])
                         result = {
                             "status": "needs_clarification",
                             "missing": ["recipient_email"],
-                            "message": f'I couldn\'t find "{recipient}" in your contacts. Here are some recent contacts: {contact_list}. Try the full email address.',
-                            "suggestions": all_contacts[:5],
+                            "message": f'I couldn\'t find "{recipient}" in your contacts. Here are your recent contacts:\n{contact_list}\n\nReply with the full email address.',
+                            "suggestions": real_all[:5],
                         }
                     else:
                         result = {
                             "status": "needs_clarification",
                             "missing": ["recipient_email"],
                             "message": f'I understood the recipient as "{recipient}", but I need the full email address.',
-                            "example": f'Draft an email to {recipient}@example.com about the proposal',
+                            "example": f'Try: "Draft an email to {recipient}@example.com about the proposal"',
                         }
             else:
                 result = create_gmail_draft_service(
