@@ -136,16 +136,34 @@ def book(title, start, duration_min, attendees=None, pending_reply=None, pending
         if pending_draft:
             try:
                 body = pending_draft.get("body", "")
-                # update body with the chosen time
+                # ✅ FIX: build body with full meeting details
                 if start:
                     try:
                         from zoneinfo import ZoneInfo
-                        ts = datetime.fromisoformat(start).astimezone(ZoneInfo("America/New_York")).strftime("%I:%M %p").lstrip("0")
-                        body = re.sub(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b', ts, body, flags=re.IGNORECASE)
-                        # if no time in body, append it
-                        if ts.lower() not in body.lower():
-                            body += f"\n\nThe meeting is scheduled for {ts}."
-                    except Exception: pass
+                        dt = datetime.fromisoformat(start).astimezone(ZoneInfo("America/New_York"))
+                        time_str = dt.strftime("%I:%M %p").lstrip("0")
+                        date_str = dt.strftime("%A, %B %d, %Y")
+                        end_dt = dt + timedelta(minutes=int(duration_min))
+                        end_str = end_dt.strftime("%I:%M %p").lstrip("0")
+                        attendee_str = ", ".join(attendees) if attendees else ""
+
+                        body = (
+                            f"Hello,\n\n"
+                            f"I'd like to confirm our upcoming meeting. Here are the details:\n\n"
+                            f"Meeting: {title}\n"
+                            f"Date: {date_str}\n"
+                            f"Time: {time_str} - {end_str} EST\n"
+                            f"Duration: {duration_min} minutes\n"
+                        )
+                        if attendee_str:
+                            body += f"Attendees: {attendee_str}\n"
+                        body += (
+                            f"\nPlease let me know if this time works for you. "
+                            f"Looking forward to it.\n\n"
+                            f"Best regards,"
+                        )
+                    except Exception:
+                        body += f"\n\nThe meeting has been scheduled."
                 r3 = requests.post(f"{API_BASE}/integrations/{p}/create-draft",
                                    json={"to": pending_draft.get("to", ""),
                                          "subject": pending_draft.get("subject", ""),
