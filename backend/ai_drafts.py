@@ -102,12 +102,12 @@ def _generate_with_ai(
     user_prompt += f"- Recipient: {recipient}\n"
     user_prompt += f"- Tone: {tone}\n"
 
-    if topic:
+    if subject:
+        user_prompt += f"- Subject/Topic: {subject}\n"
+    elif topic:
         user_prompt += f"- Topic: {topic}\n"
     if body_hint:
         user_prompt += f"- Key message to include: {body_hint}\n"
-    if subject:
-        user_prompt += f"- Subject context: {subject}\n"
 
     resp = _client.chat.completions.create(
         model=_DEFAULT_MODEL,
@@ -146,7 +146,6 @@ def _generate_reply_with_ai(
         "Match the requested tone exactly."
     )
 
-    # ✅ FIX: build a rich prompt using all available email context
     user_prompt = "Write a reply to this email:\n\n"
 
     if original_sender:
@@ -182,6 +181,27 @@ def _generate_reply_with_ai(
 # TEMPLATE FALLBACK
 # -----------------------
 
+# ✅ FIX: smarter topic text for natural-sounding templates
+def _natural_topic(topic: Optional[str], subject: Optional[str]) -> str:
+    """Build a natural phrase like 'a meeting tomorrow' instead of 'meeting'."""
+    # prefer subject if it has more context
+    if subject and len(subject) > 3 and subject.lower() not in {"quick follow-up"}:
+        s = subject.strip()
+        # don't add article if already has one or starts with proper noun
+        if s[0].isupper() and not s.lower().startswith(("a ", "an ", "the ")):
+            return s
+        return s
+    if not topic or topic == "your request":
+        return "your request"
+    # add article if missing
+    t = topic.strip()
+    if not t.lower().startswith(("a ", "an ", "the ", "my ", "our ", "your ")):
+        vowels = "aeiou"
+        article = "an" if t[0].lower() in vowels else "a"
+        return f"{article} {t}"
+    return t
+
+
 def _generate_with_template(
     recipient: str,
     topic: Optional[str],
@@ -189,25 +209,29 @@ def _generate_with_template(
     body_hint: Optional[str],
     subject: Optional[str],
 ) -> dict:
-    topic = topic or "your request"
+    # ✅ FIX: use natural topic from subject + topic
+    display_topic = _natural_topic(topic, subject)
     recipient = recipient or "there"
 
     if not subject:
-        subject = f"Regarding {topic.title()}" if topic != "your request" else "Quick Follow-Up"
+        if topic and topic != "your request":
+            subject = f"Regarding {topic.title()}"
+        else:
+            subject = "Quick Follow-Up"
 
     if body_hint:
         body = body_hint
     elif tone == "friendly":
         body = (
             f"Hi,\n\n"
-            f"I hope you're doing well! I'm reaching out regarding {topic}. "
+            f"I hope you're doing well! I'm reaching out regarding {display_topic}. "
             f"Let me know the best next step.\n\n"
             f"Thanks,"
         )
     else:
         body = (
             f"Hello,\n\n"
-            f"I hope this message finds you well. I am writing regarding {topic}. "
+            f"I hope this message finds you well. I am writing regarding {display_topic}. "
             f"Please let me know how you would like to proceed.\n\n"
             f"Best regards,"
         )
@@ -221,7 +245,6 @@ def _generate_reply_with_template(
     original_subject: Optional[str] = None,
     original_sender: Optional[str] = None,
 ) -> dict:
-    # ✅ FIX: use original email context in template too when available
     subject_ref = f" regarding '{original_subject}'" if original_subject else ""
     sender_ref = original_sender.split("<")[0].strip() if original_sender else ""
     greeting = f"Hi {sender_ref}," if sender_ref else "Hi,"
