@@ -154,6 +154,21 @@ def _detect_followup_tone(text: str) -> Optional[str]:
     return None
 
 
+def _extract_exact_text(text: str) -> Optional[str]:
+    """Extract text inside quotes — user wants this exact content."""
+    m = _re.search(r'"([^"]+)"', text)
+    if m:
+        return m.group(1).strip()
+    m2 = _re.search(r"'([^']+)'", text)
+    if m2 and len(m2.group(1)) > 3:
+        return m2.group(1).strip()
+    # "answer this exact ..." or "just say ..." without quotes
+    m3 = _re.search(r'\b(?:exact|exactly|just say|just write|just send|just reply)\s*[:\-]?\s*(.+)', text, _re.IGNORECASE)
+    if m3:
+        return m3.group(1).strip().strip('"').strip("'")
+    return None
+
+
 def _is_followup(text: str, last_context: Optional[Dict[str, Any]]) -> bool:
     """Check if the message looks like a follow-up to the previous action."""
     if not last_context:
@@ -169,6 +184,8 @@ def _is_followup(text: str, last_context: Optional[Dict[str, Any]]) -> bool:
         "add ", "remove ", "include ", "also ",
         "can you", "could you", "please ",
         "that's not", "that doesn't", "wrong ",
+        "answer ", "just say", "just write", "just send",
+        "say this", "write this", "send this", "exact",
     ]
     return any(signal in t for signal in followup_signals)
 
@@ -206,15 +223,20 @@ def _handle_followup(
 
         new_tone = _detect_followup_tone(text) or "professional"
 
-        # Use AI to regenerate with the follow-up instruction
-        ai_result = generate_email_draft(
-            recipient=recipient,
-            topic=subject,
-            tone=new_tone,
-            body_hint=f"Previous draft:\n{prev_body}\n\nUser feedback: {text}",
-            subject=subject,
-        )
-        new_body = ai_result.get("body") or prev_body
+        # ✅ NEW: if user provides exact text in quotes, use it directly
+        exact_text = _extract_exact_text(text)
+        if exact_text:
+            new_body = exact_text
+        else:
+            # Use AI to regenerate with the follow-up instruction
+            ai_result = generate_email_draft(
+                recipient=recipient,
+                topic=subject,
+                tone=new_tone,
+                body_hint=f"Previous draft:\n{prev_body}\n\nUser feedback: {text}",
+                subject=subject,
+            )
+            new_body = ai_result.get("body") or prev_body
 
         if recipient and "@" in recipient:
             result = create_gmail_draft_service(
@@ -246,14 +268,19 @@ def _handle_followup(
 
         new_tone = _detect_followup_tone(text) or "neutral"
 
-        ai_result = generate_reply_draft(
-            original_subject=subject,
-            original_body=None,
-            original_sender=to,
-            tone=new_tone,
-            body_hint=f"Previous reply:\n{prev_body}\n\nUser feedback: {text}",
-        )
-        new_body = ai_result.get("body") or prev_body
+        # ✅ NEW: if user provides exact text in quotes, use it directly
+        exact_text = _extract_exact_text(text)
+        if exact_text:
+            new_body = exact_text
+        else:
+            ai_result = generate_reply_draft(
+                original_subject=subject,
+                original_body=None,
+                original_sender=to,
+                tone=new_tone,
+                body_hint=f"Previous reply:\n{prev_body}\n\nUser feedback: {text}",
+            )
+            new_body = ai_result.get("body") or prev_body
 
         if to and thread_id:
             result = create_gmail_reply_draft_service(
