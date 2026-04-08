@@ -615,7 +615,14 @@ def _looks_like_email_drafting(text: str) -> bool:
         "need to send", "i need to send",
         "reach out to", "message to",
     ]
-    return any(p in t for p in drafting_phrases)
+    if any(p in t for p in drafting_phrases):
+        return True
+    # ✅ FIX: "send her/him/them an email", "email her/him/them"
+    if re.search(r"\bsend\s+(?:her|him|them|me)\s+(?:an?\s+)?email\b", t):
+        return True
+    if re.search(r"\bemail\s+(?:her|him|them)\b", t):
+        return True
+    return False
 
 
 # -----------------------
