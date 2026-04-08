@@ -402,8 +402,24 @@ def render_meeting_options(decision: dict, result: dict, key_prefix: str = "sug"
 def render_needs_clarification(result: dict):
     st.warning(result.get("message", "I need a bit more information."))
     missing = result.get("missing") or []
-    if missing: st.caption("Missing: " + ", ".join(missing))
-    if result.get("example"): st.caption(f"Example: `{result['example']}`")
+    suggestions = result.get("suggestions") or []
+
+    # ✅ NEW: show clickable buttons for contact suggestions
+    if suggestions and "recipient" in str(missing):
+        for i, contact in enumerate(suggestions):
+            name = contact.get("name", "")
+            email = contact.get("email", "")
+            label = f"📧 {name} — {email}" if name and name != email else f"📧 {email}"
+            btn_key = f"contact_{i}_{email}_{abs(hash(str(result)))}"
+            if st.button(label, key=btn_key, use_container_width=True):
+                # send just the email — follow-up handler will use it
+                run_prompt(email)
+                st.rerun()
+    elif missing:
+        st.caption("Missing: " + ", ".join(missing))
+
+    if result.get("example") and not suggestions:
+        st.caption(f"Example: `{result['example']}`")
 
 
 def render_generic(decision: dict):
