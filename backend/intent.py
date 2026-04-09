@@ -9,22 +9,32 @@ try:
 except Exception:
     pass
 
-USE_LLM = bool(os.getenv("GROQ_API_KEY"))
+USE_LLM = bool(os.getenv("OPENAI_API_KEY") or os.getenv("GROQ_API_KEY"))
 
 _client = None
+_DEFAULT_MODEL = "gpt-5.4-nano"
+
 if USE_LLM:
     try:
         from openai import OpenAI
 
-        _client = OpenAI(
-            api_key=os.getenv("GROQ_API_KEY"),
-            base_url="https://api.groq.com/openai/v1",
-        )
+        if os.getenv("OPENAI_API_KEY"):
+            _client = OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+            )
+            _DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-nano")
+        elif os.getenv("GROQ_API_KEY"):
+            _client = OpenAI(
+                api_key=os.getenv("GROQ_API_KEY"),
+                base_url="https://api.groq.com/openai/v1",
+            )
+            _DEFAULT_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
+        else:
+            _client = None
+            USE_LLM = False
     except Exception:
         _client = None
         USE_LLM = False
-
-_DEFAULT_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
 
 EMAIL_REGEX = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
 
@@ -62,6 +72,12 @@ _REVISION_PHRASES_EXACT = {
     "make it better",
     "make it shorter",
     "make it longer",
+    "one line",
+    "one sentence",
+    "too long",
+    "less cheesy",
+    "more direct",
+    "clean this up",
 }
 
 _REVISION_KEYWORDS = [
@@ -69,6 +85,8 @@ _REVISION_KEYWORDS = [
     "friendlier", "warmer", "rewrite", "revise", "reword", "fix",
     "improve", "better", "clean up", "make it", "change it",
     "add ", "remove ", "mention ", "say ", "replace ",
+    "one line", "one sentence", "too long", "direct", "softer",
+    "simpler", "clean", "less cheesy", "less wordy",
 ]
 
 
@@ -154,8 +172,10 @@ def _extract_participants(text: str) -> Optional[int]:
                 return n
         except ValueError:
             pass
-    word_map = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+    word_map = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10
+    }
     for w, n in word_map.items():
         if re.search(rf"\b{w}\s+(people|persons|attendees|guests|participants)\b", t):
             return n
@@ -172,14 +192,17 @@ def _extract_timeframe(text: str) -> Optional[str]:
         return "tomorrow"
     if "today" in t:
         return "today"
+
     days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     for d in days:
         if d in t:
             return d
+
     if "next month" in t:
         return "next month"
     if "this month" in t:
         return "this month"
+
     _month_map = {
         "january": 1, "february": 2, "march": 3, "april": 4,
         "may": 5, "june": 6, "july": 7, "august": 8,
@@ -216,16 +239,19 @@ def _extract_duration_min(text: str) -> Optional[int]:
         n = int(m.group(1))
         if 5 <= n <= 240:
             return n
+
     m2 = re.search(r"\bfor\s+(\d{1,3})\s*(min|mins|minute|minutes)\b", t)
     if m2:
         n = int(m2.group(1))
         if 5 <= n <= 240:
             return n
+
     m3 = re.search(r"\b(\d{1,2})\s*(hour|hours|hr|hrs)\b", t)
     if m3:
         n = int(m3.group(1)) * 60
         if 5 <= n <= 240:
             return n
+
     if "half an hour" in t:
         return 30
     if "an hour" in t or "1 hour" in t:
@@ -344,9 +370,11 @@ def _extract_email_body_hint(text: str) -> Optional[str]:
 
 def _extract_email_reference(text: str) -> Optional[str]:
     t = (text or "").lower()
-    if any(p in t for p in ["latest email", "most recent email", "last email",
-                             "email i received", "email i got", "sent to me",
-                             "that email", "the email"]):
+    if any(p in t for p in [
+        "latest email", "most recent email", "last email",
+        "email i received", "email i got", "sent to me",
+        "that email", "the email"
+    ]):
         return "latest"
     if "first email" in t:
         return "first"
@@ -390,6 +418,7 @@ def _extract_event_title(text: str) -> Optional[str]:
     m = re.search(r'called\s+"([^"]+)"', t, re.IGNORECASE)
     if m:
         return m.group(1).strip()
+
     m2 = re.search(r"called\s+(.+)", t, re.IGNORECASE)
     if m2:
         candidate = m2.group(1).strip().strip('"').strip("'")
@@ -399,6 +428,7 @@ def _extract_event_title(text: str) -> Optional[str]:
         )[0].strip(" ,.-")
         if candidate:
             return candidate[:120]
+
     m3 = re.search(
         r"\b(?:create|schedule|add|book|make)\s+(?:an?\s+)?(.+)",
         t, re.IGNORECASE,
@@ -425,6 +455,7 @@ def _extract_event_title(text: str) -> Optional[str]:
             return generic_titles[normalized]
         if candidate and len(candidate) > 1:
             return candidate[:120]
+
     if re.search(r"\bbudget review\b", t, re.IGNORECASE):
         return "budget review"
     if re.search(r"\bmeeting\b", t, re.IGNORECASE):
@@ -469,22 +500,40 @@ def _looks_like_revision_followup(text: str, last_context: Optional[Dict[str, An
         "reply_and_create_event",
     }
 
-    is_revision_like = (
-        t in _REVISION_PHRASES_EXACT
-        or any(k in t for k in _REVISION_KEYWORDS)
-        or len(t.split()) <= 6
-    )
+    if last_action not in allowed_last_actions_for_draft and last_action not in allowed_last_actions_for_reply:
+        return None
 
-    if not is_revision_like:
+    if _looks_like_reply_and_create_event(t):
+        return None
+    if _looks_like_draft_and_create_event(t):
+        return None
+    if _looks_like_list_events(t):
+        return None
+    if _looks_like_reply_email(t):
+        return None
+    if _looks_like_read_email(t):
+        return None
+    if _looks_like_list_emails(t):
+        return None
+    if _looks_like_email_drafting(t):
+        return None
+    if _looks_like_suggest_times(t):
+        return None
+    if _looks_like_create_event(t):
+        return None
+
+    strong_new_task_words = [
+        "create event", "schedule meeting", "list emails", "show inbox",
+        "read email", "open email", "reply to", "draft an email",
+        "write an email", "compose an email", "send an email",
+    ]
+    if any(p in t for p in strong_new_task_words):
         return None
 
     if last_action in allowed_last_actions_for_reply:
         return "revise_reply_draft"
 
-    if last_action in allowed_last_actions_for_draft:
-        return "revise_draft"
-
-    return None
+    return "revise_draft"
 
 
 # -----------------------
@@ -981,10 +1030,22 @@ ALLOWED INTENTS:
 
 CRITICAL:
 - If the user says "reply", "respond", or mentions replying to an email, the intent is ALWAYS "reply_email", NEVER "email_drafting".
-- If the message is short and looks like an edit request such as:
-  "shorter", "friendlier", "make it warmer", "say thanks", "mention 3pm"
-  and the previous context was a draft or reply draft,
-  classify it as "revise_draft" or "revise_reply_draft".
+- If there is previous context showing that a draft email or reply draft was just created, and the user's new message does NOT clearly request a new task, then classify it as:
+  - "revise_draft" for draft email edits
+  - "revise_reply_draft" for reply draft edits
+- Treat short follow-up messages after a generated draft as revision instructions by default, even if they are vague.
+- Examples of revision follow-ups:
+  "shorter"
+  "make it warmer"
+  "less formal"
+  "too long"
+  "say I attached it"
+  "mention Friday"
+  "one line"
+  "clean this up"
+  "not like that"
+  "make it sound better"
+- Only choose a new action intent if the user is clearly starting a different task.
 
 ENTITY EXTRACTION RULES:
 - title: the event/meeting name
