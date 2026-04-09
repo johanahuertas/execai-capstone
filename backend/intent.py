@@ -1,5 +1,3 @@
-# backend/intent.py
-
 import os
 import re
 import json
@@ -30,21 +28,16 @@ _DEFAULT_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
 
 EMAIL_REGEX = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
 
-# ✅ FIX: words that should NEVER be treated as recipient names
 _STOP_WORDS = {
-    # articles, pronouns, prepositions
     "the", "my", "a", "an", "this", "that", "it", "me", "them", "us",
     "his", "her", "its", "our", "their", "your", "some", "any", "all",
     "to", "in", "on", "at", "of", "by", "up", "so", "if", "or", "as",
     "is", "am", "are", "was", "be", "do", "no", "not", "yes",
-    # time words
     "most", "recent", "latest", "last", "first", "new", "old",
     "tomorrow", "today", "next", "week", "month", "calendar",
-    # email/action words
     "email", "emails", "inbox", "draft", "reply", "respond", "send",
     "about", "regarding", "for", "with", "from", "and", "but",
     "please", "could", "would", "should", "can", "will", "just",
-    # task words
     "meeting", "event", "appointment", "schedule",
     "team", "group", "everyone", "somebody", "someone", "nobody",
     "here", "there", "then", "now", "back", "again",
@@ -52,6 +45,31 @@ _STOP_WORDS = {
     "professional", "friendly", "casual", "formal",
     "propose", "proposal", "proposa",
 }
+
+_REVISION_PHRASES_EXACT = {
+    "shorter",
+    "longer",
+    "more formal",
+    "less formal",
+    "more casual",
+    "more professional",
+    "friendlier",
+    "warmer",
+    "better",
+    "rewrite it",
+    "revise it",
+    "fix it",
+    "make it better",
+    "make it shorter",
+    "make it longer",
+}
+
+_REVISION_KEYWORDS = [
+    "shorter", "longer", "formal", "casual", "professional", "friendly",
+    "friendlier", "warmer", "rewrite", "revise", "reword", "fix",
+    "improve", "better", "clean up", "make it", "change it",
+    "add ", "remove ", "mention ", "say ", "replace ",
+]
 
 
 # -----------------------
@@ -224,29 +242,24 @@ def _extract_tone(text: str) -> str:
     return "neutral"
 
 
-# ✅ FIX: much stricter recipient extraction — skip stop words
 def _extract_recipient(text: str) -> Optional[str]:
     t = (text or "").strip()
 
-    # 1. Full email address — always use
     email_match = re.search(EMAIL_REGEX, t)
     if email_match:
         return email_match.group(0).lower()
 
-    # 2. "email to Juliana" or "email Juliana" (skip "to" between)
     m = re.search(r"\bemail\s+(?:to\s+)?([A-Za-z][a-z]{1,})\b", t)
     if m:
         name = m.group(1).lower()
         if name not in _STOP_WORDS and len(name) > 1:
             return name
 
-    # 3. "to Juliana" / "to gavin" when context is clearly about drafting/sending
     drafting_context = any(w in t.lower() for w in [
         "draft", "write", "compose", "send", "message to",
         "reach out to", "shoot", "need to send",
     ])
     if drafting_context:
-        # "to Name" — try capitalized first, then lowercase
         m2 = re.search(r"\bto\s+([A-Z][a-z]{1,})\b", t)
         if m2:
             name = m2.group(1).lower()
@@ -275,39 +288,60 @@ def _extract_topic(text: str) -> Optional[str]:
 
 def _extract_email_subject(text: str) -> Optional[str]:
     t = (text or "").strip()
+
     m = re.search(r'subject\s+"([^"]+)"', t, re.IGNORECASE)
     if m:
         return m.group(1).strip()
+
     m2 = re.search(r"\babout\s+(.+)", t, re.IGNORECASE)
     if m2:
         candidate = m2.group(1).strip().strip('"').strip("'")
         candidate = re.split(
-            r"\bin a\b|\bwith a\b|\busing a\b|\band create\b|\band schedule\b",
-            candidate, maxsplit=1, flags=re.IGNORECASE,
+            r"\bsaying\b|\bthat says\b|\band create\b|\band schedule\b|\band send\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
         )[0].strip()
         if candidate:
             return candidate[:120]
+
     return None
 
 
 def _extract_email_body_hint(text: str) -> Optional[str]:
     t = (text or "").strip()
+
     m = re.search(r'saying\s+"([^"]+)"', t, re.IGNORECASE)
     if m:
         return m.group(1).strip()
+
     m2 = re.search(r'say\s+"([^"]+)"', t, re.IGNORECASE)
     if m2:
         return m2.group(1).strip()
+
     m3 = re.search(r'reply(?:ing)?\s+(?:with|saying)\s+"([^"]+)"', t, re.IGNORECASE)
     if m3:
         return m3.group(1).strip()
-    m4 = re.search(r'draft an email .*? saying\s+(.+?)(?:\s+and\s+create|\s+and\s+schedule|$)', t, re.IGNORECASE)
+
+    m4 = re.search(
+        r'\bdraft an email .*?\bsaying\s+(.+?)(?:\s+and\s+create|\s+and\s+schedule|$)',
+        t,
+        re.IGNORECASE,
+    )
     if m4:
         return m4.group(1).strip().strip('"').strip("'")
+
+    m5 = re.search(
+        r'\babout\s+.+?\bsaying\s+(.+?)(?:\s+and\s+create|\s+and\s+schedule|$)',
+        t,
+        re.IGNORECASE,
+    )
+    if m5:
+        return m5.group(1).strip().strip('"').strip("'")
+
     return None
 
 
-# ✅ FIX: broader email reference detection
 def _extract_email_reference(text: str) -> Optional[str]:
     t = (text or "").lower()
     if any(p in t for p in ["latest email", "most recent email", "last email",
@@ -415,6 +449,45 @@ def _extract_start_hint(text: str) -> Optional[str]:
 
 
 # -----------------------
+# CONTEXT FOLLOW-UP HELPERS
+# -----------------------
+
+def _looks_like_revision_followup(text: str, last_context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    t = (text or "").strip().lower()
+    if not t or not last_context:
+        return None
+
+    last_action = (last_context.get("action") or "").strip().lower()
+
+    allowed_last_actions_for_draft = {
+        "create_draft",
+        "draft_email",
+        "draft_email_and_create_event",
+    }
+    allowed_last_actions_for_reply = {
+        "reply_email",
+        "reply_and_create_event",
+    }
+
+    is_revision_like = (
+        t in _REVISION_PHRASES_EXACT
+        or any(k in t for k in _REVISION_KEYWORDS)
+        or len(t.split()) <= 6
+    )
+
+    if not is_revision_like:
+        return None
+
+    if last_action in allowed_last_actions_for_reply:
+        return "revise_reply_draft"
+
+    if last_action in allowed_last_actions_for_draft:
+        return "revise_draft"
+
+    return None
+
+
+# -----------------------
 # CALENDAR HELPERS
 # -----------------------
 
@@ -518,7 +591,6 @@ def _looks_like_list_emails(text: str) -> bool:
     return any(phrase in t for phrase in phrases)
 
 
-# ✅ FIX: much broader read email detection
 def _looks_like_read_email(text: str) -> bool:
     t = (text or "").lower()
     phrases = [
@@ -546,7 +618,6 @@ def _looks_like_read_email(text: str) -> bool:
 
 def _looks_like_reply_and_create_event(text: str) -> bool:
     t = (text or "").lower()
-    # ✅ FIX: use regex for broader reply detection
     has_reply = bool(re.search(
         r"\b(reply|respond)\s+(to\s+)?(my\s+|the\s+|that\s+)?(latest|last|most recent|recent)?\s*email\b", t
     ))
@@ -576,7 +647,6 @@ def _looks_like_draft_and_create_event(text: str) -> bool:
     return has_draft and has_create_event and has_time_context and has_recipient
 
 
-# ✅ FIX: much broader reply email detection
 def _looks_like_reply_email(text: str) -> bool:
     t = (text or "").lower()
     phrases = [
@@ -597,7 +667,6 @@ def _looks_like_reply_email(text: str) -> bool:
     ]
     if any(phrase in t for phrase in phrases):
         return True
-    # catch-all regex: reply/respond + to + (optional words) + email
     if re.search(r"\b(reply|respond)\s+(to\s+)?(my\s+|the\s+|that\s+)?(latest|last|most recent|recent)?\s*email\b", t):
         return True
     if re.search(r"\b(reply|respond)\s+to\s+email\s+\d+\b", t):
@@ -617,7 +686,6 @@ def _looks_like_email_drafting(text: str) -> bool:
     ]
     if any(p in t for p in drafting_phrases):
         return True
-    # ✅ FIX: "send her/him/them an email", "email her/him/them"
     if re.search(r"\bsend\s+(?:her|him|them|me)\s+(?:an?\s+)?email\b", t):
         return True
     if re.search(r"\bemail\s+(?:her|him|them)\b", t):
@@ -629,8 +697,12 @@ def _looks_like_email_drafting(text: str) -> bool:
 # RULE-BASED PARSER
 # -----------------------
 
-def _classify_intent_rules(text: str) -> str:
+def _classify_intent_rules(text: str, last_context: Optional[Dict[str, Any]] = None) -> str:
     t = (text or "").lower()
+
+    followup_intent = _looks_like_revision_followup(text, last_context)
+    if followup_intent:
+        return followup_intent
 
     if _looks_like_reply_and_create_event(t):
         return "reply_and_create_event"
@@ -639,7 +711,6 @@ def _classify_intent_rules(text: str) -> str:
     if _looks_like_list_events(t):
         return "list_events"
 
-    # ✅ FIX: reply_email MUST be checked before email_drafting
     if _looks_like_reply_email(t):
         return "reply_email"
 
@@ -656,7 +727,6 @@ def _classify_intent_rules(text: str) -> str:
     if _looks_like_create_event(t):
         return "create_event"
 
-    # ✅ FIX: don't classify as email_drafting if it looks like reply/read
     if re.search(r"\b(reply|respond)\b", t):
         return "reply_email"
 
@@ -668,8 +738,8 @@ def _classify_intent_rules(text: str) -> str:
     return "unknown"
 
 
-def _parse_intent_rules(text: str) -> Dict[str, Any]:
-    intent = _classify_intent_rules(text)
+def _parse_intent_rules(text: str, last_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    intent = _classify_intent_rules(text, last_context)
     entities: Dict[str, Any] = {}
 
     if intent == "list_events":
@@ -741,6 +811,14 @@ def _parse_intent_rules(text: str) -> Dict[str, Any]:
         entities["subject"] = _extract_email_subject(text) or _extract_topic(text)
         entities["body_hint"] = _extract_email_body_hint(text)
 
+    elif intent == "revise_draft":
+        entities["revision_instruction"] = text
+        entities["tone"] = _extract_tone(text)
+
+    elif intent == "revise_reply_draft":
+        entities["revision_instruction"] = text
+        entities["tone"] = _extract_tone(text)
+
     elif intent == "follow_up_reminder":
         entities["timeframe"] = _extract_timeframe(text) or "next week"
         entities["topic"] = _extract_topic(text)
@@ -778,7 +856,9 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
     allowed = {
         "meeting_scheduling", "email_drafting", "draft_email_and_create_event",
         "follow_up_reminder", "list_events", "create_event", "list_emails",
-        "read_email", "reply_email", "reply_and_create_event", "unknown",
+        "read_email", "reply_email", "reply_and_create_event",
+        "revise_draft", "revise_reply_draft",
+        "unknown",
     }
     if intent not in allowed:
         intent = "unknown"
@@ -793,12 +873,14 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("attendee_emails", _extract_attendee_emails(text))
         entities.setdefault("attendee_names", _extract_attendee_names(text))
         entities.setdefault("title", _extract_event_title(text))
+
     if intent == "email_drafting":
         entities.setdefault("recipient", _extract_recipient(text))
         entities.setdefault("topic", _extract_topic(text))
         entities.setdefault("tone", _extract_tone(text))
         entities.setdefault("subject", _extract_email_subject(text) or _extract_topic(text))
         entities.setdefault("body_hint", _extract_email_body_hint(text))
+
     if intent == "draft_email_and_create_event":
         entities.setdefault("recipient", _extract_recipient(text))
         entities.setdefault("topic", _extract_topic(text))
@@ -815,11 +897,13 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         attendee_emails = entities.get("attendee_emails") or []
         if recipient and recipient not in attendee_emails:
             entities["attendee_emails"] = _dedupe_keep_order(attendee_emails + [recipient])
+
     if intent == "reply_email":
         entities.setdefault("email_reference", _extract_email_reference(text) or "latest")
         entities.setdefault("email_index", _extract_email_index(text))
         entities.setdefault("body_hint", _extract_email_body_hint(text))
         entities.setdefault("tone", _extract_tone(text))
+
     if intent == "reply_and_create_event":
         entities.setdefault("email_reference", _extract_email_reference(text) or "latest")
         entities.setdefault("email_index", _extract_email_index(text))
@@ -831,12 +915,23 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("duration_min", _extract_duration_min(text) or 30)
         entities.setdefault("attendee_emails", _extract_attendee_emails(text))
         entities.setdefault("attendee_names", _extract_attendee_names(text))
+
+    if intent == "revise_draft":
+        entities.setdefault("revision_instruction", text)
+        entities.setdefault("tone", _extract_tone(text))
+
+    if intent == "revise_reply_draft":
+        entities.setdefault("revision_instruction", text)
+        entities.setdefault("tone", _extract_tone(text))
+
     if intent == "follow_up_reminder":
         entities.setdefault("timeframe", _extract_timeframe(text) or "next week")
         entities.setdefault("topic", _extract_topic(text))
         entities.setdefault("channel", "email")
+
     if intent == "list_events":
         entities.setdefault("days", _extract_days(text))
+
     if intent == "create_event":
         entities.setdefault("raw", text)
         entities.setdefault("title", _extract_event_title(text))
@@ -845,8 +940,10 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("duration_min", _extract_duration_min(text) or 30)
         entities.setdefault("attendee_emails", _extract_attendee_emails(text))
         entities.setdefault("attendee_names", _extract_attendee_names(text))
+
     if intent == "list_emails":
         entities.setdefault("max_results", 5)
+
     if intent == "read_email":
         entities.setdefault("email_reference", _extract_email_reference(text) or "latest")
         entities.setdefault("email_index", _extract_email_index(text))
@@ -860,11 +957,11 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
     }
 
 
-def _parse_intent_llm(text: str) -> Dict[str, Any]:
+def _parse_intent_llm(text: str, last_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not _client:
         raise RuntimeError("LLM not available")
 
-    system = """You are an intent parser for an AI executive assistant. 
+    system = """You are an intent parser for an AI executive assistant.
 Return ONLY valid JSON with exactly two keys: "intent" and "entities". No extra text, no markdown, no backticks.
 
 ALLOWED INTENTS:
@@ -877,10 +974,17 @@ ALLOWED INTENTS:
 - email_drafting: user wants to draft/write/compose a NEW email (not reply)
 - reply_and_create_event: user wants to reply to an email AND create a calendar event
 - draft_email_and_create_event: user wants to draft an email AND create a calendar event
+- revise_draft: user is editing a previously generated draft email
+- revise_reply_draft: user is editing a previously generated reply draft
 - follow_up_reminder: user wants a follow-up or reminder
 - unknown: anything else
 
-CRITICAL: If the user says "reply", "respond", or mentions replying to an email, the intent is ALWAYS "reply_email", NEVER "email_drafting".
+CRITICAL:
+- If the user says "reply", "respond", or mentions replying to an email, the intent is ALWAYS "reply_email", NEVER "email_drafting".
+- If the message is short and looks like an edit request such as:
+  "shorter", "friendlier", "make it warmer", "say thanks", "mention 3pm"
+  and the previous context was a draft or reply draft,
+  classify it as "revise_draft" or "revise_reply_draft".
 
 ENTITY EXTRACTION RULES:
 - title: the event/meeting name
@@ -890,6 +994,7 @@ ENTITY EXTRACTION RULES:
 - attendee_emails: array of email addresses found
 - recipient: email address or name for email drafts
 - body_hint: the message content the user wants to say
+- revision_instruction: the user's requested change to the existing draft
 - tone: "professional", "friendly", or "neutral"
 - email_reference: "latest", "first", or "indexed"
 - max_results: integer for list operations
@@ -897,11 +1002,13 @@ ENTITY EXTRACTION RULES:
 If unsure use intent="unknown" and entities={}.
 """
 
+    context_blob = json.dumps(last_context or {}, ensure_ascii=False)
+
     resp = _client.chat.completions.create(
         model=_DEFAULT_MODEL,
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": f"Text: {text}"},
+            {"role": "user", "content": f"Previous context: {context_blob}\n\nText: {text}"},
         ],
         temperature=0,
     )
@@ -918,7 +1025,7 @@ If unsure use intent="unknown" and entities={}.
 # PUBLIC API
 # -----------------------
 
-def parse_intent(text: str) -> Dict[str, Any]:
+def parse_intent(text: str, last_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     text = (text or "").strip()
     if not text:
         return {
@@ -928,14 +1035,16 @@ def parse_intent(text: str) -> Dict[str, Any]:
             "note": "Empty text. Rule-based NLP used (LLM optional).",
             "original_text": "",
         }
+
     if USE_LLM and _client:
         try:
-            return _parse_intent_llm(text)
+            return _parse_intent_llm(text, last_context)
         except Exception as e:
-            out = _parse_intent_rules(text)
+            out = _parse_intent_rules(text, last_context)
             out["note"] = (
                 "AI unavailable (quota/billing/auth/etc). Returned rule-based intent parsing. "
                 f"({type(e).__name__})"
             )
             return out
-    return _parse_intent_rules(text)
+
+    return _parse_intent_rules(text, last_context)

@@ -1,5 +1,3 @@
-# backend/main.py
-
 from datetime import datetime, timedelta
 from typing import Optional, Any, Dict, List
 
@@ -18,11 +16,17 @@ from .integrations import (
     read_email_service,
     _extract_email_address,
     resolve_contact_name,
+    search_contacts_service,
 )
 import re as _re
 
 EMAIL_REGEX = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
-from .ai_drafts import generate_reply_draft, generate_email_draft
+
+from .ai_drafts import (
+    generate_reply_draft,
+    generate_email_draft,
+    revise_email_draft,
+)
 
 app = FastAPI(title="ExecAI Backend")
 app.include_router(integrations_router)
@@ -35,7 +39,6 @@ app.include_router(integrations_router)
 class ParseIntentRequest(BaseModel):
     text: str
     provider: Optional[str] = "google"
-    # ✅ NEW: contexto de la última acción para follow-ups
     last_context: Optional[Dict[str, Any]] = None
 
 
@@ -139,43 +142,99 @@ def _build_contextual_reply_body(
     return result.get("body") or body_hint or "Thanks for the update."
 
 
-# -----------------------
-# ✅ NEW: FOLLOW-UP HANDLER
-# -----------------------
-
-def _detect_followup_tone(text: str) -> Optional[str]:
-    t = text.lower()
-    if any(w in t for w in ["professional", "formal", "seriously", "serious"]):
-        return "professional"
-    if any(w in t for w in ["friendly", "casual", "nice", "nicer", "warm", "warmer", "relaxed"]):
-        return "friendly"
-    if any(w in t for w in ["short", "shorter", "brief", "concise", "simpler"]):
-        return "concise"
-    return None
+def _find_recent_real_contacts(provider: str, query: str = "", max_scan: int = 30) -> List[Dict[str, Any]]:
+    suggestions = search_contacts_service(provider, query, max_scan=max_scan)
+    real_contacts = [
+        c for c in suggestions
+        if not any(
+            skip in c["email"].lower() for skip in [
+                "noreply", "no-reply", "mailer-daemon", "postmaster",
+                "notifications", "newsletter", "marketing", "promo",
+                "factory", "store", "shop", "sales@", "support@", "info@",
+            ]
+        )
+    ]
+    return real_contacts
 
 
 def _extract_exact_text(text: str) -> Optional[str]:
-    """Extract text inside quotes — user wants this exact content."""
     m = _re.search(r'"([^"]+)"', text)
     if m:
         return m.group(1).strip()
+
     m2 = _re.search(r"'([^']+)'", text)
-    if m2 and len(m2.group(1)) > 3:
+    if m2 and len(m2.group(1)) > 1:
         return m2.group(1).strip()
-    # "answer this exact ..." or "just say ..." without quotes
-    m3 = _re.search(r'\b(?:exact|exactly|just say|just write|just send|just reply)\s*[:\-]?\s*(.+)', text, _re.IGNORECASE)
+
+    m3 = _re.search(
+        r'\b(?:exact|exactly|just say|just write|just send|just reply|say this|write this|send this)\s*[:\-]?\s*(.+)',
+        text,
+        _re.IGNORECASE,
+    )
     if m3:
         return m3.group(1).strip().strip('"').strip("'")
+
     return None
 
 
+def _extract_previous_email_payload(last_result: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(last_result, dict):
+        return {}
+
+    email = last_result.get("email")
+    if isinstance(email, dict) and email:
+        return email
+
+    draft = last_result.get("draft")
+    if isinstance(draft, dict):
+        email_from_draft = draft.get("email")
+        if isinstance(email_from_draft, dict) and email_from_draft:
+            return email_from_draft
+
+    reply = last_result.get("reply")
+    if isinstance(reply, dict):
+        reply_email = reply.get("email")
+        if isinstance(reply_email, dict) and reply_email:
+            return reply_email
+
+    nested_draft = last_result.get("draft")
+    if isinstance(nested_draft, dict):
+        nested_email = nested_draft.get("email")
+        if isinstance(nested_email, dict) and nested_email:
+            return nested_email
+
+    return {}
+
+
+def _extract_previous_draft_meta(last_result: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(last_result, dict):
+        return {}
+
+    draft = last_result.get("draft")
+    if isinstance(draft, dict) and draft:
+        return draft
+
+    reply = last_result.get("reply")
+    if isinstance(reply, dict):
+        draft2 = reply.get("draft")
+        if isinstance(draft2, dict) and draft2:
+            return draft2
+
+    return {}
+
+
+# -----------------------
+# FOLLOW-UP DETECTION
+# -----------------------
+
 def _is_followup(text: str, last_context: Optional[Dict[str, Any]]) -> bool:
-    """Check if the message looks like a follow-up to the previous action."""
     if not last_context:
         return False
-    t = text.lower().strip()
 
-    # ✅ NEW: if last action needed clarification and user provides email, it's a follow-up
+    t = (text or "").lower().strip()
+    if not t:
+        return False
+
     last_result = last_context.get("result") or {}
     if last_result.get("status") == "needs_clarification":
         if _re.search(EMAIL_REGEX, text):
@@ -184,11 +243,11 @@ def _is_followup(text: str, last_context: Optional[Dict[str, Any]]) -> bool:
     followup_signals = [
         "make it", "change it", "more ", "less ", "too ",
         "not ", "don't like", "didn't like", "i don't",
-        "try again", "redo", "rewrite", "rephrase",
+        "try again", "redo", "rewrite", "rephrase", "revise",
         "actually", "instead", "but ", "no,", "nah",
-        "shorter", "longer", "nicer", "friendlier",
+        "shorter", "longer", "nicer", "friendlier", "warmer",
         "more professional", "more casual", "more formal",
-        "add ", "remove ", "include ", "also ",
+        "add ", "remove ", "include ", "also ", "mention ",
         "can you", "could you", "please ",
         "that's not", "that doesn't", "wrong ",
         "answer ", "just say", "just write", "just send",
@@ -202,48 +261,58 @@ def _handle_followup(
     last_context: Dict[str, Any],
     provider: str,
 ) -> Optional[Dict[str, Any]]:
-    """Handle follow-up messages based on the last action's context."""
-
     last_action = (last_context.get("action") or "").lower()
     last_result = last_context.get("result") or {}
     last_decision = last_context.get("decision") or {}
 
-    # ✅ NEW: handle clarification follow-ups (user provides email after suggestion)
+    # --- clarification follow-up ---
     if last_result.get("status") == "needs_clarification":
         email_match = _re.search(EMAIL_REGEX, text)
-        if email_match and last_action in {"create_draft", "draft_email"}:
+        if email_match and last_action in {"create_draft", "draft_email", "draft_email_and_create_event"}:
             new_recipient = email_match.group(0).lower()
             subject = last_decision.get("subject") or "Quick Follow-Up"
             body = last_decision.get("body") or ""
+
             if not body:
                 body_result = generate_email_draft(
-                    recipient=new_recipient, topic=subject,
-                    tone="professional", subject=subject,
+                    recipient=new_recipient,
+                    topic=subject,
+                    tone=last_decision.get("tone") or "professional",
+                    subject=subject,
                 )
                 body = body_result.get("body") or ""
+
             result = create_gmail_draft_service(
-                provider=provider, to=new_recipient,
-                subject=subject, body=body,
+                provider=provider,
+                to=new_recipient,
+                subject=subject,
+                body=body,
             )
             return {
-                "intent_data": {"intent": "followup_clarification", "entities": {"recipient": new_recipient}, "mode": "followup", "original_text": text},
-                "decision": {"action": "create_draft", "message": f"Draft created for {new_recipient}."},
+                "intent_data": {
+                    "intent": "followup_clarification",
+                    "entities": {"recipient": new_recipient},
+                    "mode": "followup",
+                    "original_text": text,
+                },
+                "decision": {
+                    "action": "create_draft",
+                    "message": f"Draft created for {new_recipient}.",
+                },
                 "result": result,
             }
 
-    # --- Follow-up on DRAFT ---
-    if last_action in {"create_draft", "draft_email"}:
-        prev_email = last_result.get("email") or {}
+    # --- follow-up on draft email ---
+    if last_action in {"create_draft", "draft_email", "draft_email_and_create_event"}:
+        prev_email = _extract_previous_email_payload(last_result)
         recipient = prev_email.get("to") or ""
         subject = prev_email.get("subject") or "Quick Follow-Up"
         prev_body = prev_email.get("body") or ""
 
-        # ✅ NEW: detect if user wants to change recipient
         new_email_match = _re.search(EMAIL_REGEX, text)
         if new_email_match:
             recipient = new_email_match.group(0).lower()
         else:
-            # check for name-based recipient change: "send it to Sarah instead"
             name_match = _re.search(r"\bto\s+([A-Z][a-z]+)\b", text)
             if name_match:
                 name = name_match.group(1)
@@ -251,22 +320,19 @@ def _handle_followup(
                 if resolved:
                     recipient = resolved
 
-        new_tone = _detect_followup_tone(text) or "professional"
-
-        # ✅ NEW: if user provides exact text in quotes, use it directly
         exact_text = _extract_exact_text(text)
         if exact_text:
             new_body = exact_text
         else:
-            # Use AI to regenerate with the follow-up instruction
-            ai_result = generate_email_draft(
-                recipient=recipient,
-                topic=subject,
-                tone=new_tone,
-                body_hint=f"Previous draft:\n{prev_body}\n\nUser feedback: {text}",
+            revised = revise_email_draft(
+                current_body=prev_body,
+                revision_instruction=text,
                 subject=subject,
+                recipient=recipient,
+                original_context=last_decision.get("message") or "",
+                tone=last_decision.get("tone") or "professional",
             )
-            new_body = ai_result.get("body") or prev_body
+            new_body = revised.get("body") or prev_body
 
         if recipient and "@" in recipient:
             result = create_gmail_draft_service(
@@ -278,44 +344,62 @@ def _handle_followup(
         else:
             result = {
                 "status": "draft_created",
-                "draft": {"id": "followup", "messageId": "followup", "threadId": "", "labelIds": []},
-                "email": {"to": recipient, "subject": subject, "body": new_body},
+                "draft": {
+                    "id": "followup",
+                    "messageId": "followup",
+                    "threadId": "",
+                    "labelIds": [],
+                },
+                "email": {
+                    "to": recipient,
+                    "subject": subject,
+                    "body": new_body,
+                },
             }
 
         return {
-            "intent_data": {"intent": "followup_draft", "entities": {}, "mode": "followup", "original_text": text},
-            "decision": {"action": "create_draft", "message": "Here's the updated draft."},
+            "intent_data": {
+                "intent": "revise_draft",
+                "entities": {"revision_instruction": text},
+                "mode": "followup",
+                "original_text": text,
+            },
+            "decision": {
+                "action": "create_draft",
+                "message": "Here's the updated draft.",
+                "tone": last_decision.get("tone") or "professional",
+            },
             "result": result,
         }
 
-    # --- Follow-up on REPLY ---
-    if last_action in {"reply_email", "create_reply_draft"}:
-        prev_email = last_result.get("email") or {}
-        to = prev_email.get("to") or ""
+    # --- follow-up on reply draft ---
+    if last_action in {"reply_email", "create_reply_draft", "reply_and_create_event"}:
+        prev_email = _extract_previous_email_payload(last_result)
+        prev_draft = _extract_previous_draft_meta(last_result)
+
+        to_email = prev_email.get("to") or ""
         subject = prev_email.get("subject") or "Quick Follow-Up"
         prev_body = prev_email.get("body") or ""
-        thread_id = (last_result.get("draft") or {}).get("threadId") or ""
+        thread_id = prev_draft.get("threadId") or ""
 
-        new_tone = _detect_followup_tone(text) or "neutral"
-
-        # ✅ NEW: if user provides exact text in quotes, use it directly
         exact_text = _extract_exact_text(text)
         if exact_text:
             new_body = exact_text
         else:
-            ai_result = generate_reply_draft(
-                original_subject=subject,
-                original_body=None,
-                original_sender=to,
-                tone=new_tone,
-                body_hint=f"Previous reply:\n{prev_body}\n\nUser feedback: {text}",
+            revised = revise_email_draft(
+                current_body=prev_body,
+                revision_instruction=text,
+                subject=subject,
+                recipient=to_email,
+                original_context="Reply draft revision",
+                tone=last_decision.get("tone") or "neutral",
             )
-            new_body = ai_result.get("body") or prev_body
+            new_body = revised.get("body") or prev_body
 
-        if to and thread_id:
+        if to_email and thread_id:
             result = create_gmail_reply_draft_service(
                 provider=provider,
-                to=to,
+                to=to_email,
                 subject=subject,
                 body=new_body,
                 thread_id=thread_id,
@@ -323,13 +407,31 @@ def _handle_followup(
         else:
             result = {
                 "status": "reply_draft_created",
-                "draft": {"id": "followup", "messageId": "followup", "threadId": thread_id, "labelIds": []},
-                "email": {"to": to, "subject": subject, "body": new_body},
+                "draft": {
+                    "id": "followup",
+                    "messageId": "followup",
+                    "threadId": thread_id,
+                    "labelIds": [],
+                },
+                "email": {
+                    "to": to_email,
+                    "subject": subject,
+                    "body": new_body,
+                },
             }
 
         return {
-            "intent_data": {"intent": "followup_reply", "entities": {}, "mode": "followup", "original_text": text},
-            "decision": {"action": "reply_email", "message": "Here's the updated reply."},
+            "intent_data": {
+                "intent": "revise_reply_draft",
+                "entities": {"revision_instruction": text},
+                "mode": "followup",
+                "original_text": text,
+            },
+            "decision": {
+                "action": "reply_email",
+                "message": "Here's the updated reply.",
+                "tone": last_decision.get("tone") or "neutral",
+            },
             "result": result,
         }
 
@@ -350,7 +452,7 @@ def parse_intent_endpoint(payload: ParseIntentRequest):
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
-    return parse_intent_ai(text)
+    return parse_intent_ai(text, payload.last_context)
 
 
 # -----------------------
@@ -366,27 +468,25 @@ def assistant(payload: ParseIntentRequest):
     request_provider = (payload.provider or "google").strip().lower()
     last_context = payload.last_context
 
-    # ✅ NEW: Check for follow-up BEFORE normal intent parsing
     if last_context and _is_followup(text, last_context):
         try:
             followup_result = _handle_followup(text, last_context, request_provider)
             if followup_result:
                 return followup_result
-        except Exception:
-            pass  # Fall through to normal flow if follow-up fails
+        except Exception as e:
+            print("followup failed:", type(e).__name__, str(e))
 
-    intent_data = parse_intent_ai(text)
+    intent_data = parse_intent_ai(text, last_context)
     decision = handle_intent(intent_data)
 
-    # ✅ NEW: If intent is unknown but we have context, try follow-up as fallback
     intent = (intent_data.get("intent") or "").strip()
     if intent == "unknown" and last_context:
         try:
             followup_result = _handle_followup(text, last_context, request_provider)
             if followup_result:
                 return followup_result
-        except Exception:
-            pass
+        except Exception as e:
+            print("followup fallback failed:", type(e).__name__, str(e))
 
     existing_result = (decision or {}).get("result")
     if existing_result is not None:
@@ -410,7 +510,6 @@ def assistant(payload: ParseIntentRequest):
             timeframe = (entities.get("timeframe") or "").lower()
             if timeframe == "today":
                 from zoneinfo import ZoneInfo
-                from datetime import timezone
                 tz = ZoneInfo("America/New_York")
                 local_now = datetime.now(tz)
                 start_of_day = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -507,6 +606,7 @@ def assistant(payload: ParseIntentRequest):
             recipient = (decision or {}).get("recipient") or entities.get("recipient")
             subject = (decision or {}).get("subject") or entities.get("subject") or "Quick Follow-Up"
             body = (decision or {}).get("body") or entities.get("body_hint") or ""
+            tone = (decision or {}).get("tone") or entities.get("tone") or "professional"
 
             if not recipient:
                 result = {
@@ -516,17 +616,8 @@ def assistant(payload: ParseIntentRequest):
                     "example": 'Try: "Draft an email to sarah@example.com about the proposal"',
                 }
             elif "@" not in str(recipient):
-                # ✅ FIX: never auto-resolve — always show suggestions and let user confirm
-                from .integrations import search_contacts_service
-                suggestions = search_contacts_service(provider, str(recipient), max_scan=30)
-                # filter out marketing/noreply addresses from suggestions
-                real_contacts = [c for c in suggestions if not any(
-                    skip in c["email"] for skip in [
-                        "noreply", "no-reply", "mailer-daemon", "postmaster",
-                        "notifications", "newsletter", "marketing", "promo",
-                        "factory", "store", "shop", "sales", "support", "info@",
-                    ]
-                )]
+                real_contacts = _find_recent_realContacts = _find_recent_real_contacts(provider, str(recipient), max_scan=30)
+
                 if real_contacts:
                     suggestion_list = "\n".join(f"• {c['name']} — {c['email']}" for c in real_contacts[:5])
                     result = {
@@ -536,15 +627,7 @@ def assistant(payload: ParseIntentRequest):
                         "suggestions": real_contacts[:5],
                     }
                 else:
-                    # no good match — show all real contacts
-                    all_contacts = search_contacts_service(provider, "", max_scan=30)
-                    real_all = [c for c in all_contacts if not any(
-                        skip in c["email"] for skip in [
-                            "noreply", "no-reply", "mailer-daemon", "postmaster",
-                            "notifications", "newsletter", "marketing", "promo",
-                            "factory", "store", "shop", "sales", "support", "info@",
-                        ]
-                    )]
+                    real_all = _find_recent_real_contacts(provider, "", max_scan=30)
                     if real_all:
                         contact_list = "\n".join(f"• {c['name']} — {c['email']}" for c in real_all[:5])
                         result = {
@@ -561,12 +644,74 @@ def assistant(payload: ParseIntentRequest):
                             "example": f'Try: "Draft an email to {recipient}@example.com about the proposal"',
                         }
             else:
+                if not body:
+                    generated = generate_email_draft(
+                        recipient=str(recipient),
+                        topic=str(subject),
+                        tone=tone,
+                        subject=str(subject),
+                    )
+                    body = generated.get("body") or ""
+
                 result = create_gmail_draft_service(
                     provider=provider,
                     to=str(recipient),
                     subject=str(subject),
                     body=str(body),
                 )
+
+        elif action == "revise_draft":
+            if not last_context:
+                result = {
+                    "status": "needs_clarification",
+                    "message": "I need a previous draft to revise.",
+                }
+            else:
+                prev_result = last_context.get("result") or {}
+                prev_email = _extract_previous_email_payload(prev_result)
+
+                recipient = prev_email.get("to") or ""
+                subject = prev_email.get("subject") or "Quick Follow-Up"
+                prev_body = prev_email.get("body") or ""
+                revision_instruction = entities.get("revision_instruction") or text
+                tone = (decision or {}).get("tone") or entities.get("tone") or "professional"
+
+                exact_text = _extract_exact_text(text)
+                if exact_text:
+                    new_body = exact_text
+                else:
+                    revised = revise_email_draft(
+                        current_body=prev_body,
+                        revision_instruction=revision_instruction,
+                        subject=subject,
+                        recipient=recipient,
+                        original_context="Draft revision",
+                        tone=tone,
+                    )
+                    new_body = revised.get("body") or prev_body
+
+                if recipient and "@" in recipient:
+                    result = create_gmail_draft_service(
+                        provider=provider,
+                        to=recipient,
+                        subject=subject,
+                        body=new_body,
+                    )
+                else:
+                    result = {
+                        "status": "draft_created",
+                        "draft": {
+                            "id": "revised",
+                            "messageId": "revised",
+                            "threadId": "",
+                            "labelIds": [],
+                        },
+                        "email": {
+                            "to": recipient,
+                            "subject": subject,
+                            "body": new_body,
+                        },
+                    }
 
         elif action in {"reply_email", "create_reply_draft"}:
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
@@ -607,6 +752,62 @@ def assistant(payload: ParseIntentRequest):
                         body=body,
                         thread_id=thread_id,
                     )
+
+        elif action == "revise_reply_draft":
+            if not last_context:
+                result = {
+                    "status": "needs_clarification",
+                    "message": "I need a previous reply draft to revise.",
+                }
+            else:
+                prev_result = last_context.get("result") or {}
+                prev_email = _extract_previous_email_payload(prev_result)
+                prev_draft = _extract_previous_draft_meta(prev_result)
+
+                to_email = prev_email.get("to") or ""
+                subject = prev_email.get("subject") or "Quick Follow-Up"
+                prev_body = prev_email.get("body") or ""
+                thread_id = prev_draft.get("threadId") or ""
+                revision_instruction = entities.get("revision_instruction") or text
+                tone = (decision or {}).get("tone") or entities.get("tone") or "neutral"
+
+                exact_text = _extract_exact_text(text)
+                if exact_text:
+                    new_body = exact_text
+                else:
+                    revised = revise_email_draft(
+                        current_body=prev_body,
+                        revision_instruction=revision_instruction,
+                        subject=subject,
+                        recipient=to_email,
+                        original_context="Reply draft revision",
+                        tone=tone,
+                    )
+                    new_body = revised.get("body") or prev_body
+
+                if to_email and thread_id:
+                    result = create_gmail_reply_draft_service(
+                        provider=provider,
+                        to=to_email,
+                        subject=subject,
+                        body=new_body,
+                        thread_id=thread_id,
+                    )
+                else:
+                    result = {
+                        "status": "reply_draft_created",
+                        "draft": {
+                            "id": "revised_reply",
+                            "messageId": "revised_reply",
+                            "threadId": thread_id,
+                            "labelIds": [],
+                        },
+                        "email": {
+                            "to": to_email,
+                            "subject": subject,
+                            "body": new_body,
+                        },
+                    }
 
         elif action in {"reply_and_create_event"}:
             email_reference = entities.get("email_reference") or "latest"
@@ -717,6 +918,7 @@ def assistant(payload: ParseIntentRequest):
             recipient = (decision or {}).get("recipient") or entities.get("recipient")
             subject = (decision or {}).get("subject") or entities.get("subject") or "Meeting"
             body = (decision or {}).get("body") or entities.get("body_hint") or ""
+            tone = (decision or {}).get("tone") or entities.get("tone") or "professional"
             event_title = (decision or {}).get("event_title") or entities.get("title") or "Meeting"
             event_start = (decision or {}).get("start")
             duration_min = (decision or {}).get("duration_min") or entities.get("duration_min") or 30
@@ -745,11 +947,21 @@ def assistant(payload: ParseIntentRequest):
                     "example": f'Draft an email to {recipient}@example.com saying I am available tomorrow at 2pm and create the meeting',
                 }
             else:
-                # ✅ FIX: if conflict, DON'T create draft yet — save as pending
+                if not body:
+                    generated = generate_email_draft(
+                        recipient=str(recipient),
+                        topic=str(subject),
+                        tone=tone,
+                        subject=str(subject),
+                    )
+                    body = generated.get("body") or ""
+
                 if not event_start:
                     draft_result = create_gmail_draft_service(
-                        provider=provider, to=str(recipient),
-                        subject=str(subject), body=str(body),
+                        provider=provider,
+                        to=str(recipient),
+                        subject=str(subject),
+                        body=str(body),
                     )
                     result = {
                         "status": "partial_success",
@@ -785,8 +997,10 @@ def assistant(payload: ParseIntentRequest):
                     }
                 else:
                     draft_result = create_gmail_draft_service(
-                        provider=provider, to=str(recipient),
-                        subject=str(subject), body=str(body),
+                        provider=provider,
+                        to=str(recipient),
+                        subject=str(subject),
+                        body=str(body),
                     )
                     calendar_result = create_event_service(
                         provider=provider,
@@ -811,6 +1025,7 @@ def assistant(payload: ParseIntentRequest):
     except HTTPException as e:
         result = {"status": "error", "where": "integrations", "detail": e.detail}
     except Exception as e:
+        print("assistant failed:", type(e).__name__, str(e))
         result = {"status": "error", "where": "assistant", "detail": f"{type(e).__name__}: {str(e)}"}
 
     return {"intent_data": intent_data, "decision": decision, "result": result}
@@ -855,24 +1070,23 @@ def draft_email(req: DraftEmailRequest):
     recipient = (req.recipient or "the recipient").strip()
     topic = (req.topic or "your request").strip()
     tone = (req.tone or "professional").strip().lower()
-    subject = f"Regarding {topic.title()}" if topic else "Quick Follow-Up"
 
-    if tone == "friendly":
-        greeting = f"Hi {recipient},"
-        closing = "Thanks so much,\nExecAI (Draft)"
-    else:
-        greeting = f"Hello {recipient},"
-        closing = "Best regards,\nExecAI (Draft)"
-
-    body = (
-        f"{greeting}\n\n"
-        f"I hope you're doing well. I'm reaching out regarding {topic}. "
-        f"Please let me know the best next step.\n\n"
-        f"{closing}"
+    generated = generate_email_draft(
+        recipient=recipient,
+        topic=topic,
+        tone=tone,
+        subject=f"Regarding {topic.title()}" if topic else "Quick Follow-Up",
+        body_hint=req.original_text,
     )
 
     return {
         "status": "drafted",
-        "email": {"to": recipient, "subject": subject, "body": body, "tone": tone, "provider": "mock"},
+        "email": {
+            "to": recipient,
+            "subject": generated.get("subject") or "Quick Follow-Up",
+            "body": generated.get("body") or "",
+            "tone": tone,
+            "provider": "mock",
+        },
         "message": "Email draft generated (mock).",
     }

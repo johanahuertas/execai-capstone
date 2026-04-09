@@ -1,5 +1,3 @@
-# backend/orchestrator.py
-
 from __future__ import annotations
 
 import re
@@ -132,14 +130,12 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
     tf_lower = tf.lower()
     parsed_time = _parse_time_from_text(raw_text)
 
-    # ✅ FIX: detectar formato ISO "YYYY-MM-DD" que viene de _extract_timeframe en intent.py
     iso_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", tf)
     if iso_match:
         y, m, d = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
         hour, minute = parsed_time if parsed_time else (9, 0)
         return datetime(y, m, d, hour, minute, tzinfo=tz)
 
-    # ✅ FIX: detectar "YYYY-MM-DD at HH:MM" (start_hint combinado con hora)
     iso_time_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})\s+at\s+(.+)$", tf, re.IGNORECASE)
     if iso_time_match:
         y, m, d = int(iso_time_match.group(1)), int(iso_time_match.group(2)), int(iso_time_match.group(3))
@@ -147,7 +143,6 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
         hour, minute = time_part if time_part else (9, 0)
         return datetime(y, m, d, hour, minute, tzinfo=tz)
 
-    # ✅ FIX Bug B: detectar "Dec 16", "Dec 16 2026", "December 16", "December 16 2026"
     _month_abbr = {
         "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
         "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
@@ -185,7 +180,6 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
         start = now + timedelta(hours=1)
         return start.replace(minute=0, second=0, microsecond=0)
 
-    # ✅ días de la semana (monday, tuesday, etc.)
     days_of_week = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     if tf_lower in days_of_week:
         target_weekday = days_of_week.index(tf_lower)
@@ -254,16 +248,11 @@ def _suggest_alternative_slots(
     max_options: int = 3,
 ) -> List[Dict[str, Any]]:
     try:
-        # ✅ FIX Bug G: usar start_dt directamente para obtener el día correcto
-        # start_dt ya tiene la fecha correcta (Dec 16, Apr 7, etc.)
-        # Buscar alternativas en ESE mismo día, no en "timeframe" que puede tener formato variable
         same_day_start = datetime(start_dt.year, start_dt.month, start_dt.day, 8, 0, tzinfo=tz)
         same_day_end = datetime(start_dt.year, start_dt.month, start_dt.day, 18, 0, tzinfo=tz)
 
-        # Si el evento es de mañana o pronto, también revisar días siguientes
         now = datetime.now(tz)
         if same_day_start < now:
-            # El día ya pasó, buscar desde ahora en adelante
             search_start, search_end = timeframe_to_range(timeframe, tz)
         else:
             search_start = same_day_start
@@ -277,7 +266,6 @@ def _suggest_alternative_slots(
             )
             busy_blocks = freebusy_data.get("busy_blocks", []) or []
         except Exception:
-            # ✅ FIX: fallback con búsqueda en el rango correcto, no en hoy
             busy_blocks = get_mock_busy_blocks(search_start, tz)
 
         slots = find_available_slots(
@@ -297,11 +285,8 @@ def _suggest_alternative_slots(
                 slot_start = datetime.fromisoformat(slot_start_raw)
             except Exception:
                 continue
-            # ✅ FIX: para eventos el mismo día, mostrar cualquier slot disponible
-            # Solo filtrar por >= start_dt si es un día relativo (tomorrow, next week)
-            # Para fechas específicas, mostrar los mejores slots del día
             if slot_start.date() == start_dt.date():
-                filtered.append(_normalize_slot(slot))  # cualquier hora del mismo día
+                filtered.append(_normalize_slot(slot))
             elif slot_start >= start_dt:
                 filtered.append(_normalize_slot(slot))
 
@@ -476,6 +461,34 @@ def _build_meeting_scheduling_decision(intent: str, entities: Dict[str, Any], or
         }
 
 
+def _build_revise_draft_decision(intent: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    revision_instruction = (entities.get("revision_instruction") or "").strip()
+    tone = (entities.get("tone") or "professional").lower()
+
+    return {
+        "action": "revise_draft",
+        "intent": intent,
+        "provider": DEFAULT_PROVIDER,
+        "revision_instruction": revision_instruction,
+        "tone": tone,
+        "message": "Revising your existing email draft.",
+    }
+
+
+def _build_revise_reply_draft_decision(intent: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+    revision_instruction = (entities.get("revision_instruction") or "").strip()
+    tone = (entities.get("tone") or "neutral").lower()
+
+    return {
+        "action": "revise_reply_draft",
+        "intent": intent,
+        "provider": DEFAULT_PROVIDER,
+        "revision_instruction": revision_instruction,
+        "tone": tone,
+        "message": "Revising your existing reply draft.",
+    }
+
+
 # -----------------------
 # MAIN ORCHESTRATION
 # -----------------------
@@ -545,6 +558,9 @@ def handle_intent(intent_data: dict) -> dict:
             "message": "Preparing a reply draft for the requested email.",
         }
 
+    if intent == "revise_reply_draft":
+        return _build_revise_reply_draft_decision(intent, entities)
+
     if intent == "reply_and_create_event":
         email_reference = entities.get("email_reference") or "latest"
         email_index = entities.get("email_index")
@@ -599,6 +615,9 @@ def handle_intent(intent_data: dict) -> dict:
             "tone": tone,
             "message": "Creating Gmail draft.",
         }
+
+    if intent == "revise_draft":
+        return _build_revise_draft_decision(intent, entities)
 
     if intent == "draft_email_and_create_event":
         recipient = entities.get("recipient")
