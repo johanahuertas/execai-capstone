@@ -670,6 +670,8 @@ def list_emails_service(
     max_results: int = 10,
     inbox_only: bool = True,
     primary_only: bool = False,
+    sender_filter: Optional[str] = None,
+    sender_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     provider = (provider or "google").strip().lower()
     max_results = max(1, min(int(max_results), 20))

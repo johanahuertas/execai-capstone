@@ -730,7 +730,9 @@ def render_draft_and_create(result: dict):
 
 
 def render_result(decision: dict, result, idx: int = 0):
-    action = (decision or {}).get("action") or ""
+    decision = decision or {}
+    result = result or {}
+    action = decision.get("action") or ""
 
     if isinstance(result, dict):
         s = result.get("status")
@@ -977,7 +979,16 @@ for idx, msg in enumerate(st.session_state.messages):
         if msg["role"] == "user":
             st.markdown(msg["content"])
         else:
-            render_result(msg.get("decision") or {}, msg.get("result"), idx=idx)
+            try:
+                render_result(msg.get("decision") or {}, msg.get("result"), idx=idx)
+            except Exception as e:
+                st.error("The assistant returned an unexpected response.")
+                with st.expander("Technical details"):
+                    st.code(str(e))
+                    st.json({
+                        "decision": msg.get("decision"),
+                        "result": msg.get("result"),
+                    })
 
 # ── Empty state ────────────────────────────────────────────────────────────
 if not st.session_state.messages:

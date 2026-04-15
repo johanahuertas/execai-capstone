@@ -77,14 +77,18 @@ def _resolve_target_email(
     provider: str,
     email_reference: str,
     email_index: Optional[int],
+    sender_filter: Optional[str] = None,
+    sender_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
 
     if email_reference == "latest":
         latest_list = list_emails_service(
             provider=provider,
-            max_results=1,
+            max_results=10 if (sender_filter or sender_name) else 1,
             inbox_only=False,
             primary_only=True,
+            sender_filter=sender_filter,
+            sender_name=sender_name,
         )
         emails = latest_list.get("emails", []) or []
         if not emails:
@@ -107,9 +111,11 @@ def _resolve_target_email(
 
         email_list = list_emails_service(
             provider=provider,
-            max_results=max(index, 1),
+            max_results=max(index, 10),
             inbox_only=False,
             primary_only=True,
+            sender_filter=sender_filter,
+            sender_name=sender_name,
         )
         emails = email_list.get("emails", []) or []
         if len(emails) < index:
@@ -591,10 +597,15 @@ def assistant(payload: ParseIntentRequest):
             email_reference = (decision or {}).get("email_reference") or entities.get("email_reference") or "latest"
             email_index = (decision or {}).get("email_index") or entities.get("email_index")
 
+            sender_filter = entities.get("sender_filter")
+            sender_name = entities.get("sender_name")
+
             target_email = _resolve_target_email(
                 provider=provider,
                 email_reference=email_reference,
                 email_index=email_index,
+                sender_filter=sender_filter,
+                sender_name=sender_name,
             )
 
             if not target_email:
@@ -718,11 +729,15 @@ def assistant(payload: ParseIntentRequest):
             email_index = (decision or {}).get("email_index") or entities.get("email_index")
             body_hint = entities.get("body_hint") or ""
             tone = entities.get("tone") or "neutral"
+            sender_filter = entities.get("sender_filter")
+            sender_name = entities.get("sender_name")
 
             target_email = _resolve_target_email(
                 provider=provider,
                 email_reference=email_reference,
                 email_index=email_index,
+                sender_filter=sender_filter,
+                sender_name=sender_name,
             )
 
             if not target_email:

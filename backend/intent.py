@@ -156,6 +156,52 @@ def _parse_name_chunk(chunk: str) -> List[str]:
     return names
 
 
+
+
+def _extract_sender_filter(text: str) -> Optional[str]:
+    t = (text or "").strip()
+
+    m_email = re.search(
+        r"\b(?:reply|respond)(?:\s+to)?\s+(?:my\s+|the\s+)?(?:latest|last|most recent|recent)\s+email\s+from\s+"
+        r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b",
+        t,
+        re.IGNORECASE,
+    )
+    if m_email:
+        return m_email.group(1).strip().lower()
+
+    return None
+
+
+def _extract_sender_name(text: str) -> Optional[str]:
+    t = (text or "").strip()
+
+    m_name = re.search(
+        r"\b(?:reply|respond)(?:\s+to)?\s+(?:my\s+|the\s+)?(?:latest|last|most recent|recent)\s+email\s+from\s+"
+        r"([A-Za-z][A-Za-z\s'.-]{1,60})",
+        t,
+        re.IGNORECASE,
+    )
+    if not m_name:
+        return None
+
+    raw = m_name.group(1).strip(" .,!?:;")
+    raw = re.split(
+        r"\b(?:saying|and|about|regarding|tomorrow|today|next|at|on|for)\b",
+        raw,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" .,!?:;")
+
+    if not raw:
+        return None
+
+    if re.search(EMAIL_REGEX, raw):
+        return None
+
+    return raw
+
+
 def _extract_participants(text: str) -> Optional[int]:
     t = (text or "").lower()
     if "all four of us" in t or "the four of us" in t:
@@ -808,6 +854,8 @@ def _parse_intent_rules(text: str, last_context: Optional[Dict[str, Any]] = None
         entities["email_index"] = _extract_email_index(text)
         entities["body_hint"] = _extract_email_body_hint(text)
         entities["tone"] = _extract_tone(text)
+        entities["sender_filter"] = _extract_sender_filter(text)
+        entities["sender_name"] = _extract_sender_name(text)
         entities["title"] = _extract_event_title(text) or "Meeting"
         entities["timeframe"] = _extract_timeframe(text)
         entities["start_hint"] = _extract_start_hint(text)
@@ -836,6 +884,8 @@ def _parse_intent_rules(text: str, last_context: Optional[Dict[str, Any]] = None
         entities["email_index"] = _extract_email_index(text)
         entities["body_hint"] = _extract_email_body_hint(text)
         entities["tone"] = _extract_tone(text)
+        entities["sender_filter"] = _extract_sender_filter(text)
+        entities["sender_name"] = _extract_sender_name(text)
 
     elif intent == "read_email":
         entities["email_reference"] = _extract_email_reference(text) or "latest"
@@ -952,12 +1002,16 @@ def _normalize_llm_result(text: str, obj: dict) -> Dict[str, Any]:
         entities.setdefault("email_index", _extract_email_index(text))
         entities.setdefault("body_hint", _extract_email_body_hint(text))
         entities.setdefault("tone", _extract_tone(text))
+        entities.setdefault("sender_filter", _extract_sender_filter(text))
+        entities.setdefault("sender_name", _extract_sender_name(text))
 
     if intent == "reply_and_create_event":
         entities.setdefault("email_reference", _extract_email_reference(text) or "latest")
         entities.setdefault("email_index", _extract_email_index(text))
         entities.setdefault("body_hint", _extract_email_body_hint(text))
         entities.setdefault("tone", _extract_tone(text))
+        entities.setdefault("sender_filter", _extract_sender_filter(text))
+        entities.setdefault("sender_name", _extract_sender_name(text))
         entities.setdefault("title", _extract_event_title(text) or "Meeting")
         entities.setdefault("timeframe", _extract_timeframe(text))
         entities.setdefault("start_hint", _extract_start_hint(text))
