@@ -90,10 +90,6 @@ _REVISION_KEYWORDS = [
 ]
 
 
-# -----------------------
-# EXTRACTION HELPERS
-# -----------------------
-
 def _dedupe_keep_order(items: List[str]) -> List[str]:
     seen = set()
     out: List[str] = []
@@ -154,8 +150,6 @@ def _parse_name_chunk(chunk: str) -> List[str]:
         if words[0][0].isupper() or words[0].lower() in {"dr.", "mr.", "ms.", "mrs.", "prof."}:
             names.append(p)
     return names
-
-
 
 
 def _extract_sender_filter(text: str) -> Optional[str]:
@@ -525,10 +519,6 @@ def _extract_start_hint(text: str) -> Optional[str]:
     return None
 
 
-# -----------------------
-# CONTEXT FOLLOW-UP HELPERS
-# -----------------------
-
 def _looks_like_revision_followup(text: str, last_context: Optional[Dict[str, Any]] = None) -> Optional[str]:
     t = (text or "").strip().lower()
     if not t or not last_context:
@@ -581,10 +571,6 @@ def _looks_like_revision_followup(text: str, last_context: Optional[Dict[str, An
 
     return "revise_draft"
 
-
-# -----------------------
-# CALENDAR HELPERS
-# -----------------------
 
 def _has_word(t: str, word: str) -> bool:
     return re.search(rf"\b{re.escape(word)}\b", t) is not None
@@ -670,10 +656,6 @@ def _looks_like_create_event(text: str) -> bool:
         or (has_attendee and has_explicit_time)
     )
 
-
-# -----------------------
-# EMAIL HELPERS
-# -----------------------
 
 def _looks_like_list_emails(text: str) -> bool:
     t = (text or "").lower()
@@ -787,10 +769,6 @@ def _looks_like_email_drafting(text: str) -> bool:
         return True
     return False
 
-
-# -----------------------
-# RULE-BASED PARSER
-# -----------------------
 
 def _classify_intent_rules(text: str, last_context: Optional[Dict[str, Any]] = None) -> str:
     t = (text or "").lower()
@@ -931,10 +909,6 @@ def _parse_intent_rules(text: str, last_context: Optional[Dict[str, Any]] = None
         "original_text": text,
     }
 
-
-# -----------------------
-# LLM PARSER
-# -----------------------
 
 def _safe_json_load(s: str) -> Optional[dict]:
     try:
@@ -1135,10 +1109,6 @@ If unsure use intent="unknown" and entities={}.
 
     return _normalize_llm_result(text, obj)
 
-
-# -----------------------
-# PUBLIC API
-# -----------------------
 
 def parse_intent(text: str, last_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     text = (text or "").strip()

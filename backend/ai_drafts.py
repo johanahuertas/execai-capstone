@@ -8,7 +8,6 @@ try:
 except Exception:
     pass
 
-# --- OpenAI client (PRIMARY) ---
 _openai_client = None
 try:
     if os.getenv("OPENAI_API_KEY"):
@@ -20,7 +19,6 @@ except Exception as e:
     print("OpenAI client init failed:", type(e).__name__, str(e))
     _openai_client = None
 
-# --- Groq client (FALLBACK) ---
 _groq_client = None
 try:
     if os.getenv("GROQ_API_KEY"):
@@ -39,13 +37,10 @@ _DEFAULT_GROQ_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
 
 def _clean_output(text: str) -> str:
     text = (text or "").strip()
-
     text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
     text = re.sub(r"\n?```$", "", text)
-
     text = re.sub(r"^subject\s*:.*\n?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"^to\s*:.*\n?", "", text, flags=re.IGNORECASE)
-
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text
 
@@ -199,10 +194,6 @@ def revise_email_draft(
         "source": "rule_revision",
     }
 
-
-# -----------------------
-# OPENAI (PRIMARY)
-# -----------------------
 
 def _generate_with_openai(
     recipient: str,
@@ -359,10 +350,6 @@ Return only the revised body.
         "source": "openai_revision",
     }
 
-
-# -----------------------
-# GROQ (FALLBACK)
-# -----------------------
 
 def _generate_with_groq(
     recipient: str,
@@ -550,10 +537,6 @@ Return only the revised body.
     }
 
 
-# -----------------------
-# TEMPLATE FALLBACK
-# -----------------------
-
 def _generate_with_template(
     recipient: str,
     topic: Optional[str],
@@ -624,17 +607,14 @@ def _revise_with_rules(current_body: str, instruction: str) -> str:
 
     compact_body = " ".join(line.strip() for line in body.splitlines() if line.strip())
 
-    if (
-        "one line" in instruction
-        or "one sentence" in instruction
-    ):
-        sentences = re.split(r'(?<=[.!?])\s+', compact_body)
+    if "one line" in instruction or "one sentence" in instruction:
+        sentences = re.split(r"(?<=[.!?])\s+", compact_body)
         if sentences and sentences[0].strip():
             return sentences[0].strip()
         return compact_body
 
     if "shorter" in instruction or "more concise" in instruction or "brief" in instruction or "too long" in instruction:
-        sentences = re.split(r'(?<=[.!?])\s+', compact_body)
+        sentences = re.split(r"(?<=[.!?])\s+", compact_body)
         if len(sentences) >= 1:
             return sentences[0].strip()
         if len(compact_body) > 100:
@@ -664,7 +644,7 @@ def _revise_with_rules(current_body: str, instruction: str) -> str:
         return compact_body
 
     if "less cheesy" in instruction or "more direct" in instruction or "make it direct" in instruction:
-        sentences = re.split(r'(?<=[.!?])\s+', compact_body)
+        sentences = re.split(r"(?<=[.!?])\s+", compact_body)
         if sentences:
             return " ".join(sentences[:2]).strip()
         return compact_body
@@ -680,7 +660,7 @@ def _revise_with_rules(current_body: str, instruction: str) -> str:
         return body2
 
     if "not like that" in instruction:
-        sentences = re.split(r'(?<=[.!?])\s+', compact_body)
+        sentences = re.split(r"(?<=[.!?])\s+", compact_body)
         if sentences:
             return sentences[0].strip()
         return compact_body

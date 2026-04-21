@@ -8,17 +8,11 @@ from typing import List, Dict, Any, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 DEFAULT_TZ = ZoneInfo("America/New_York")
-
 DEFAULT_WORK_START = time(9, 0)
 DEFAULT_WORK_END = time(17, 0)
-
 SLOT_INCREMENT_MIN = 30
 MAX_SUGGESTIONS = 3
 
-
-# -----------------------
-# SLOT DETECTION
-# -----------------------
 
 def find_available_slots(
     busy_blocks: List[Dict[str, str]],
@@ -30,7 +24,6 @@ def find_available_slots(
     tz: ZoneInfo = DEFAULT_TZ,
     max_results: int = MAX_SUGGESTIONS,
 ) -> List[Dict[str, Any]]:
-
     busy = _parse_busy_blocks(busy_blocks, tz)
 
     candidates = _generate_candidates(
@@ -66,10 +59,6 @@ def find_available_slots(
     return results
 
 
-# -----------------------
-# HELPERS
-# -----------------------
-
 def _parse_busy_blocks(
     blocks: List[Dict[str, str]], tz: ZoneInfo
 ) -> List[Tuple[datetime, datetime]]:
@@ -102,7 +91,6 @@ def _generate_candidates(
     work_end: time,
     tz: ZoneInfo,
 ) -> List[Tuple[datetime, datetime]]:
-
     candidates = []
     duration = timedelta(minutes=duration_min)
     increment = timedelta(minutes=SLOT_INCREMENT_MIN)
@@ -116,7 +104,6 @@ def _generate_candidates(
     end_date = search_end.date()
 
     while current_date <= end_date:
-
         if current_date.weekday() >= 5:
             current_date += timedelta(days=1)
             continue
@@ -140,7 +127,6 @@ def _generate_candidates(
 
 
 def _round_up_to_increment(dt: datetime, increment_min: int) -> datetime:
-
     minute = dt.minute
     remainder = minute % increment_min
 
@@ -158,7 +144,6 @@ def _overlaps_any(
     slot_end: datetime,
     busy: List[Tuple[datetime, datetime]],
 ) -> bool:
-
     for busy_start, busy_end in busy:
         if slot_start < busy_end and slot_end > busy_start:
             return True
@@ -167,27 +152,22 @@ def _overlaps_any(
 
 
 def _format_display(dt: datetime, tz: ZoneInfo) -> str:
-
     local = dt.astimezone(tz)
     return local.strftime("%a %b %d, %I:%M %p %Z")
 
-
-# -----------------------
-# TIMEFRAME PARSER
-# -----------------------
 
 def timeframe_to_range(
     timeframe: Optional[str],
     tz: ZoneInfo = DEFAULT_TZ,
 ) -> Tuple[datetime, datetime]:
-
     now = datetime.now(tz)
     tf = (timeframe or "").lower().strip()
 
-    # ✅ FIX: manejar fechas ISO como "2026-04-10"
     iso_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", tf)
     if iso_match:
-        y, m, d = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
+        y = int(iso_match.group(1))
+        m = int(iso_match.group(2))
+        d = int(iso_match.group(3))
         target = datetime(y, m, d, tzinfo=tz).date()
         start = datetime.combine(target, time(0, 0), tzinfo=tz)
         end = datetime.combine(target, time(23, 59), tzinfo=tz)
@@ -238,17 +218,14 @@ def timeframe_to_range(
     ]
 
     if tf in day_names:
-
         target_weekday = day_names.index(tf)
         current_weekday = now.weekday()
-
         days_ahead = target_weekday - current_weekday
 
         if days_ahead <= 0:
             days_ahead += 7
 
         target_date = (now + timedelta(days=days_ahead)).date()
-
         start = datetime.combine(target_date, time(0, 0), tzinfo=tz)
         end = datetime.combine(target_date, time(23, 59), tzinfo=tz)
 
@@ -260,12 +237,10 @@ def timeframe_to_range(
     return start, end
 
 
-# -----------------------
-# MOCK DATA
-# -----------------------
-
-def get_mock_busy_blocks(target_date: datetime, tz: ZoneInfo = DEFAULT_TZ) -> List[Dict[str, str]]:
-
+def get_mock_busy_blocks(
+    target_date: datetime,
+    tz: ZoneInfo = DEFAULT_TZ,
+) -> List[Dict[str, str]]:
     d = target_date.date()
 
     if d.weekday() >= 5:
@@ -297,24 +272,17 @@ def get_mock_busy_blocks(target_date: datetime, tz: ZoneInfo = DEFAULT_TZ) -> Li
     return blocks
 
 
-# -----------------------
-# CONFLICT CHECK
-# -----------------------
-
 def check_conflicts(
     event_start: datetime,
     event_end: datetime,
     busy_blocks: List[Dict[str, str]],
     tz: ZoneInfo = DEFAULT_TZ,
 ) -> List[Dict[str, str]]:
-
     parsed = _parse_busy_blocks(busy_blocks, tz)
     conflicts = []
 
     for busy_start, busy_end in parsed:
-
         if event_start < busy_end and event_end > busy_start:
-
             for block in busy_blocks:
                 try:
                     bs = datetime.fromisoformat(block["start"])
@@ -334,7 +302,6 @@ def check_conflicts(
 
                 except (KeyError, ValueError):
                     continue
-
             else:
                 conflicts.append(
                     {
@@ -347,16 +314,11 @@ def check_conflicts(
     return conflicts
 
 
-# -----------------------
-# BUSY BLOCKS SOURCE
-# -----------------------
-
 def get_busy_blocks(
     target_date: datetime,
     tz: ZoneInfo = DEFAULT_TZ,
     use_google: bool = False,
 ) -> List[Dict[str, str]]:
-
     if use_google:
         try:
             from .integrations import get_freebusy_service

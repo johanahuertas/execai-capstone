@@ -32,10 +32,6 @@ app = FastAPI(title="ExecAI Backend")
 app.include_router(integrations_router)
 
 
-# -----------------------
-# MODELS
-# -----------------------
-
 class ParseIntentRequest(BaseModel):
     text: str
     provider: Optional[str] = "google"
@@ -55,10 +51,6 @@ class DraftEmailRequest(BaseModel):
     tone: Optional[str] = "professional"
     original_text: Optional[str] = None
 
-
-# -----------------------
-# HELPERS
-# -----------------------
 
 def _dedupe_keep_order(items: List[str]) -> List[str]:
     seen = set()
@@ -80,7 +72,6 @@ def _resolve_target_email(
     sender_filter: Optional[str] = None,
     sender_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-
     if email_reference == "latest":
         latest_list = list_emails_service(
             provider=provider,
@@ -229,10 +220,6 @@ def _extract_previous_draft_meta(last_result: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-# -----------------------
-# FOLLOW-UP DETECTION
-# -----------------------
-
 def _is_followup(text: str, last_context: Optional[Dict[str, Any]]) -> bool:
     if not last_context:
         return False
@@ -271,7 +258,6 @@ def _handle_followup(
     last_result = last_context.get("result") or {}
     last_decision = last_context.get("decision") or {}
 
-    # --- clarification follow-up ---
     if last_result.get("status") == "needs_clarification":
         email_match = _re.search(EMAIL_REGEX, text)
         if email_match and last_action in {"create_draft", "draft_email", "draft_email_and_create_event"}:
@@ -308,7 +294,6 @@ def _handle_followup(
                 "result": result,
             }
 
-    # --- follow-up on draft email ---
     if last_action in {"create_draft", "draft_email", "draft_email_and_create_event"}:
         prev_email = _extract_previous_email_payload(last_result)
         recipient = prev_email.get("to") or ""
@@ -378,7 +363,6 @@ def _handle_followup(
             "result": result,
         }
 
-    # --- follow-up on reply draft ---
     if last_action in {"reply_email", "create_reply_draft", "reply_and_create_event"}:
         prev_email = _extract_previous_email_payload(last_result)
         prev_draft = _extract_previous_draft_meta(last_result)
@@ -444,10 +428,6 @@ def _handle_followup(
     return None
 
 
-# -----------------------
-# BASIC ROUTES
-# -----------------------
-
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -460,10 +440,6 @@ def parse_intent_endpoint(payload: ParseIntentRequest):
         raise HTTPException(status_code=400, detail="Text is required.")
     return parse_intent_ai(text, payload.last_context)
 
-
-# -----------------------
-# MAIN ASSISTANT
-# -----------------------
 
 @app.post("/assistant")
 def assistant(payload: ParseIntentRequest):
@@ -627,7 +603,7 @@ def assistant(payload: ParseIntentRequest):
                     "example": 'Try: "Draft an email to sarah@example.com about the proposal"',
                 }
             elif "@" not in str(recipient):
-                real_contacts = _find_recent_realContacts = _find_recent_real_contacts(provider, str(recipient), max_scan=30)
+                real_contacts = _find_recent_real_contacts(provider, str(recipient), max_scan=30)
 
                 if real_contacts:
                     suggestion_list = "\n".join(f"• {c['name']} — {c['email']}" for c in real_contacts[:5])
@@ -1045,10 +1021,6 @@ def assistant(payload: ParseIntentRequest):
 
     return {"intent_data": intent_data, "decision": decision, "result": result}
 
-
-# -----------------------
-# LEGACY ROUTES
-# -----------------------
 
 @app.post("/suggest-times")
 def suggest_times(payload: ParseIntentRequest):

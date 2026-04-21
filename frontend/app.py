@@ -8,7 +8,6 @@ API_BASE = "http://localhost:8000"
 
 st.set_page_config(page_title="ExecAI", page_icon="🤖", layout="centered")
 
-# Minimal CSS — only things Streamlit can't do natively
 st.markdown("""
 <style>
     .block-container { padding-top: 2rem; padding-bottom: 2rem; }
@@ -16,16 +15,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
-# ── Session state ──────────────────────────────────────────────────────────
-for k, v in [("messages", []), ("debug_last", {}), ("google_auth_url", None),
-             ("outlook_auth_url", None), ("google_status", False),
-             ("outlook_status", False), ("provider", "google")]:
+for k, v in [
+    ("messages", []),
+    ("debug_last", {}),
+    ("google_auth_url", None),
+    ("outlook_auth_url", None),
+    ("google_status", False),
+    ("outlook_status", False),
+    ("provider", "google"),
+]:
     if k not in st.session_state:
         st.session_state[k] = v
 
 
-# ── Utilities ──────────────────────────────────────────────────────────────
 def prov():
     return st.session_state.provider
 
@@ -82,7 +84,6 @@ def check_status():
 
 
 def _build_last_context():
-    """Extract the last assistant action + result for multi-turn context."""
     for msg in reversed(st.session_state.messages):
         if msg.get("role") == "assistant":
             decision = msg.get("decision") or {}
@@ -281,8 +282,6 @@ def book(title, start, duration_min, attendees=None, pending_reply=None, pending
         st.rerun()
 
 
-# ── Card components ────────────────────────────────────────────────────────
-
 def event_card(e: dict, provider: str = None):
     with st.container(border=True):
         col1, col2 = st.columns([3, 1])
@@ -375,8 +374,16 @@ def draft_card(label: str, em: dict, draft: dict, sent_key: str, send_url: str):
                     st.error(f"Failed: {e}")
 
 
-def time_option_card(label: str, start_raw: str, dur: int, attendees: list,
-                     btn_key: str, title: str, pending_reply=None, pending_draft=None):
+def time_option_card(
+    label: str,
+    start_raw: str,
+    dur: int,
+    attendees: list,
+    btn_key: str,
+    title: str,
+    pending_reply=None,
+    pending_draft=None,
+):
     with st.container(border=True):
         col1, col2 = st.columns([3, 1])
         col1.markdown(f"**{label}**")
@@ -399,8 +406,14 @@ def time_option_card(label: str, start_raw: str, dur: int, attendees: list,
             )
 
 
-def custom_time_picker(title: str, duration: int, attendees: list,
-                       key_prefix: str, pending_reply=None, pending_draft=None):
+def custom_time_picker(
+    title: str,
+    duration: int,
+    attendees: list,
+    key_prefix: str,
+    pending_reply=None,
+    pending_draft=None,
+):
     with st.container(border=True):
         st.markdown("**Pick a custom time**")
         c1, c2 = st.columns(2)
@@ -433,8 +446,6 @@ def custom_time_picker(title: str, duration: int, attendees: list,
             else:
                 st.warning("Select both date and time.")
 
-
-# ── Render functions ───────────────────────────────────────────────────────
 
 def render_event_list(result: dict):
     events = result.get("events") or []
@@ -559,8 +570,13 @@ def render_proposed_event(proposed: dict):
         st.caption(f"🕐 {fmt(proposed.get('start', ''))}  ·  {proposed.get('duration_min', 30)} min")
 
 
-def render_alternatives(alternatives: list, proposed_event: dict = None,
-                        key_prefix: str = "alt", pending_reply=None, pending_draft=None):
+def render_alternatives(
+    alternatives: list,
+    proposed_event: dict = None,
+    key_prefix: str = "alt",
+    pending_reply=None,
+    pending_draft=None,
+):
     proposed_event = proposed_event or {}
     title = proposed_event.get("title") or "Meeting"
     attendees = proposed_event.get("attendee_emails") or []
@@ -830,7 +846,6 @@ def render_result(decision: dict, result, idx: int = 0):
     render_generic(decision)
 
 
-# ── Sidebar ────────────────────────────────────────────────────────────────
 check_status()
 
 with st.sidebar:
@@ -909,10 +924,8 @@ with st.sidebar:
     show_debug = st.toggle("Debug", value=False)
 
 
-# ── Header ─────────────────────────────────────────────────────────────────
 st.markdown("## ExecAI")
 
-# ── Quick tools ────────────────────────────────────────────────────────────
 with st.expander("🛠 Quick tools", expanded=False):
     tc1, tc2, tc3 = st.columns(3)
 
@@ -973,7 +986,6 @@ with st.expander("🛠 Quick tools", expanded=False):
 
 st.divider()
 
-# ── Chat history ───────────────────────────────────────────────────────────
 for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         if msg["role"] == "user":
@@ -990,7 +1002,6 @@ for idx, msg in enumerate(st.session_state.messages):
                         "result": msg.get("result"),
                     })
 
-# ── Empty state ────────────────────────────────────────────────────────────
 if not st.session_state.messages:
     st.markdown("""
 <p class="empty-hint">
@@ -1004,7 +1015,6 @@ Try asking something like…<br>
 • show my calendar for next week
 </p>""", unsafe_allow_html=True)
 
-# ── Chat input ─────────────────────────────────────────────────────────────
 prompt = st.chat_input("Ask ExecAI something…")
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -1060,7 +1070,6 @@ if prompt:
                 st.error(f"Backend error: {e}")
                 push({"message": "Backend error"}, {"status": "error", "detail": str(e)})
 
-# ── Debug ──────────────────────────────────────────────────────────────────
 if show_debug:
     with st.expander("Debug", expanded=False):
         dbg = st.session_state.debug_last or {}

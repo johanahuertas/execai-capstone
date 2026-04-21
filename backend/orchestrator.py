@@ -144,10 +144,29 @@ def _default_start_from_timeframe(timeframe: Optional[str], raw_text: str, tz: Z
         return datetime(y, m, d, hour, minute, tzinfo=tz)
 
     _month_abbr = {
-        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
-        "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
-        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1,
+        "feb": 2,
+        "mar": 3,
+        "apr": 4,
+        "may": 5,
+        "jun": 6,
+        "jul": 7,
+        "aug": 8,
+        "sep": 9,
+        "oct": 10,
+        "nov": 11,
+        "dec": 12,
+        "january": 1,
+        "february": 2,
+        "march": 3,
+        "april": 4,
+        "june": 6,
+        "july": 7,
+        "august": 8,
+        "september": 9,
+        "october": 10,
+        "november": 11,
+        "december": 12,
     }
     natural_date = re.match(
         r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|"
@@ -488,10 +507,6 @@ def _build_revise_reply_draft_decision(intent: str, entities: Dict[str, Any]) ->
         "message": "Revising your existing reply draft.",
     }
 
-
-# -----------------------
-# MAIN ORCHESTRATION
-# -----------------------
 
 def handle_intent(intent_data: dict) -> dict:
     intent = (intent_data or {}).get("intent") or "unknown"
